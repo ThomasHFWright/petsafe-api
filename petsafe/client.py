@@ -8,7 +8,7 @@ from botocore import UNSIGNED
 import asyncio
 import httpx
 
-from petsafe.devices import DeviceScoopfree, DeviceSmartFeed
+from petsafe.devices import DeviceScoopfree, DeviceSmartDoor, DeviceSmartFeed
 
 from .const import PETSAFE_API_BASE, PETSAFE_CLIENT_ID, PETSAFE_REGION
 
@@ -66,6 +66,32 @@ class PetSafeClient:
             DeviceScoopfree(self, litterbox_data)
             for litterbox_data in json.loads(content)["data"]
         ]
+
+    async def get_smartdoors(self) -> list[DeviceSmartDoor]:
+        """
+        Sends a request to PetSafe's API for all smart doors associated with account.
+
+        :param client: PetSafeClient with authorization tokens
+        :return: list of SmartDoor devices
+
+        """
+        response = await self.api_get("smartdoor/product/product")
+        content = response.content.decode("UTF-8")
+        data = json.loads(content)
+        devices = data.get("data", data)
+        return [DeviceSmartDoor(self, door_data) for door_data in devices]
+
+    async def get_smartdoor(self, thing_name: str) -> DeviceSmartDoor:
+        """Fetch the details for a single SmartDoor identified by ``thing_name``."""
+
+        if not thing_name:
+            raise ValueError("thing_name must be provided")
+
+        response = await self.api_get(f"smartdoor/product/product/{thing_name}/")
+        content = response.content.decode("UTF-8")
+        data = json.loads(content)
+        payload = data.get("data", data)
+        return DeviceSmartDoor(self, payload)
 
     async def request_code(self) -> None:
         """
