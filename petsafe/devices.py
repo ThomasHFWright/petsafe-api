@@ -1,6 +1,12 @@
 import json
 from typing import Optional
 
+from .const import (
+    SMARTDOOR_MODE_MANUAL_LOCKED,
+    SMARTDOOR_MODE_MANUAL_UNLOCKED,
+    SMARTDOOR_MODE_SMART,
+)
+
 
 class DeviceSmartFeed:
     def __init__(self, client, data: dict):
@@ -517,7 +523,12 @@ class DeviceSmartDoor:
         return [data]
 
     async def set_mode(self, mode: str, update_data: bool = True) -> None:
-        """Set the SmartDoor operating mode."""
+        """Set the SmartDoor operating mode.
+
+        Valid modes include :data:`petsafe.const.SMARTDOOR_MODE_MANUAL_LOCKED`,
+        :data:`petsafe.const.SMARTDOOR_MODE_MANUAL_UNLOCKED`, and
+        :data:`petsafe.const.SMARTDOOR_MODE_SMART`.
+        """
 
         await self.client.api_patch(
             self.api_path + "shadow", data={"door": {"mode": mode}}
@@ -532,17 +543,21 @@ class DeviceSmartDoor:
     async def lock(self, update_data: bool = True) -> None:
         """Lock the SmartDoor manually."""
 
-        await self.set_mode("MANUAL_LOCKED", update_data=update_data)
+        await self.set_mode(
+            SMARTDOOR_MODE_MANUAL_LOCKED, update_data=update_data
+        )
 
     async def unlock(self, update_data: bool = True) -> None:
         """Unlock the SmartDoor manually."""
 
-        await self.set_mode("MANUAL_UNLOCKED", update_data=update_data)
+        await self.set_mode(
+            SMARTDOOR_MODE_MANUAL_UNLOCKED, update_data=update_data
+        )
 
     async def smart_mode(self, update_data: bool = True) -> None:
         """Enable Smart mode on the SmartDoor."""
 
-        await self.set_mode("SMART", update_data=update_data)
+        await self.set_mode(SMARTDOOR_MODE_SMART, update_data=update_data)
 
     @property
     def api_name(self) -> str:
