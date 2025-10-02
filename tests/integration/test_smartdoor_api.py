@@ -24,7 +24,7 @@ def _ensure_smartdoor_available(smartdoors: Iterable[DeviceSmartDoor]) -> Device
 
 
 @pytest.mark.asyncio
-async def test_get_smartdoors_uses_live_api(authenticated_client: PetSafeClient) -> None:
+async def test_get_smartdoors(authenticated_client: PetSafeClient) -> None:
     response = await authenticated_client.api_get("smartdoor/product/product")
     payload = response.json()
     print(_dump_response(payload))
@@ -36,7 +36,7 @@ async def test_get_smartdoors_uses_live_api(authenticated_client: PetSafeClient)
 
 
 @pytest.mark.asyncio
-async def test_get_single_smartdoor_uses_live_api(authenticated_client: PetSafeClient) -> None:
+async def test_get_single_smartdoor(authenticated_client: PetSafeClient) -> None:
     smartdoors = await authenticated_client.get_smartdoors()
     door = _ensure_smartdoor_available(smartdoors)
 
@@ -50,7 +50,7 @@ async def test_get_single_smartdoor_uses_live_api(authenticated_client: PetSafeC
 
 
 @pytest.mark.asyncio
-async def test_smartdoor_activity_uses_live_api(authenticated_client: PetSafeClient) -> None:
+async def test_smartdoor_activity(authenticated_client: PetSafeClient) -> None:
     smartdoors = await authenticated_client.get_smartdoors()
     door = _ensure_smartdoor_available(smartdoors)
 
