@@ -116,7 +116,7 @@ async def _ensure_active_tokens(client: PetSafeClient, secrets: Dict[str, Any]) 
     _save_secrets(secrets)
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def authenticated_client() -> PetSafeClient:
     if not sys.stdin.isatty():
         pytest.skip("Interactive login tests require a TTY.")
