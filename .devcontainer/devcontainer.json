@@ -1,7 +1,7 @@
 {
   "name": "petsafe",
   "image": "mcr.microsoft.com/devcontainers/python:3.11",
-  "postCreateCommand": "pip install --upgrade pip && pip install -e . && pip install pytest pytest-asyncio",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
   "customizations": {
     "vscode": {
       "settings": {
