@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pytest
+import pytest_asyncio
 
 try:
     from petsafe.client import InvalidCodeException, PetSafeClient
@@ -114,7 +115,7 @@ async def _ensure_active_tokens(client: PetSafeClient, secrets: Dict[str, Any]) 
     _save_secrets(secrets)
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session")
 async def authenticated_client() -> PetSafeClient:
     if not sys.stdin.isatty():
         pytest.skip("Interactive login tests require a TTY.")
