@@ -5,7 +5,13 @@
   "customizations": {
     "vscode": {
       "settings": {
-        "python.defaultInterpreterPath": "/usr/local/bin/python"
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.testing.pytestEnabled": true,
+        "python.testing.unittestEnabled": false,
+        "python.testing.cwd": "${containerWorkspaceFolder}",
+        "python.testing.pytestArgs": [
+          "tests"
+        ]
       },
       "extensions": [
         "ms-python.python",
