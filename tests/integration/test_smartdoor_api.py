@@ -1,4 +1,5 @@
 import json
+import sys
 import time
 from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
@@ -23,6 +24,14 @@ async def _create_client(mock_handler):
         )
         client._token_expires_time = time.time() + 3600  # noqa: SLF001 - test setup
         yield client
+
+
+def _assert_response_printed(capsys, expected_text: str) -> None:
+    captured = capsys.readouterr().out
+    assert expected_text in captured
+    # Re-emit the captured output so `pytest -s` users see the mocked payloads.
+    sys.__stdout__.write(captured)
+    sys.__stdout__.flush()
 
 
 @pytest.mark.asyncio
@@ -51,8 +60,7 @@ async def test_get_smartdoors_prints_response_body(capsys):
         assert [door.api_name for door in smartdoors] == ["door-1", "door-2"]
         print(body_text)
 
-    captured = capsys.readouterr().out
-    assert body_text in captured
+    _assert_response_printed(capsys, body_text)
     assert requested_urls and requested_urls[0].path == "/smartdoor/product/product"
 
 
@@ -76,8 +84,7 @@ async def test_get_single_smartdoor_prints_response_body(capsys):
         assert smartdoor.api_name == "primary-door"
         print(body_text)
 
-    captured = capsys.readouterr().out
-    assert body_text in captured
+    _assert_response_printed(capsys, body_text)
     assert requested_paths == ["/smartdoor/product/product/primary-door/"]
 
 
@@ -100,5 +107,4 @@ async def test_smartdoor_activity_api_prints_response_body(capsys):
         assert activity == payload["data"]
         print(body_text)
 
-    captured = capsys.readouterr().out
-    assert body_text in captured
+    _assert_response_printed(capsys, body_text)
