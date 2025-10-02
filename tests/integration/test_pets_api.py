@@ -47,6 +47,7 @@ def _normalise_payload(payload: object) -> Iterable[object]:
 @pytest.mark.asyncio
 async def test_list_pets(authenticated_client: PetSafeClient) -> None:
     response = await authenticated_client.api_get("pets/pets")
+    response.raise_for_status()
     payload = response.json()
     print(_dump_response(payload))
 
@@ -56,6 +57,7 @@ async def test_list_pets(authenticated_client: PetSafeClient) -> None:
     normalised = list(_normalise_payload(payload))
     if normalised:
         assert len(pets_from_helper) == len(normalised)
+        assert pets_from_helper == normalised
 
 
 @pytest.mark.asyncio
@@ -70,6 +72,7 @@ async def test_list_pet_products(authenticated_client: PetSafeClient) -> None:
     response = await authenticated_client.api_get(
         f"directory/petProduct?petId={quote_plus(pet_id)}"
     )
+    response.raise_for_status()
     payload = response.json()
     print(_dump_response(payload))
 
@@ -79,3 +82,4 @@ async def test_list_pet_products(authenticated_client: PetSafeClient) -> None:
     normalised = list(_normalise_payload(payload))
     if normalised:
         assert len(products) == len(normalised)
+        assert products == normalised
