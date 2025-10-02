@@ -17,7 +17,9 @@ from getpass import getpass
 from pathlib import Path
 from typing import Any, Dict
 
+import httpx
 import pytest
+import pytest_asyncio
 
 try:
     from petsafe.client import InvalidCodeException, PetSafeClient
@@ -114,7 +116,7 @@ async def _ensure_active_tokens(client: PetSafeClient, secrets: Dict[str, Any]) 
     _save_secrets(secrets)
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture
 async def authenticated_client() -> PetSafeClient:
     if not sys.stdin.isatty():
         pytest.skip("Interactive login tests require a TTY.")
@@ -122,21 +124,22 @@ async def authenticated_client() -> PetSafeClient:
     secrets: Dict[str, Any] = _load_secrets()
     email = _ensure_email(secrets)
 
-    client = PetSafeClient(
-        email=email,
-        id_token=secrets.get("tokens", {}).get("id_token"),
-        refresh_token=secrets.get("tokens", {}).get("refresh_token"),
-        access_token=secrets.get("tokens", {}).get("access_token"),
-    )
+    async with httpx.AsyncClient() as httpx_client:
+        client = PetSafeClient(
+            email=email,
+            id_token=secrets.get("tokens", {}).get("id_token"),
+            refresh_token=secrets.get("tokens", {}).get("refresh_token"),
+            access_token=secrets.get("tokens", {}).get("access_token"),
+            client=httpx_client,
+        )
 
-    await _ensure_active_tokens(client, secrets)
+        await _ensure_active_tokens(client, secrets)
 
-    try:
-        yield client
-    finally:
-        secrets["tokens"] = _collect_tokens(client)
-        _save_secrets(secrets)
-        await client._client.aclose()  # noqa: SLF001 - intentional use of private attribute
+        try:
+            yield client
+        finally:
+            secrets["tokens"] = _collect_tokens(client)
+            _save_secrets(secrets)
 
 
 @pytest.mark.asyncio
