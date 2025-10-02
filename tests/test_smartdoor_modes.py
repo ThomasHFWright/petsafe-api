@@ -139,3 +139,38 @@ async def test_client_manual_unlock_without_refresh() -> None:
         "door": {"mode": SMARTDOOR_MODE_MANUAL_UNLOCKED}
     }
     assert door.mode == SMARTDOOR_MODE_MANUAL_UNLOCKED
+
+
+@pytest.mark.asyncio
+async def test_client_smart_mode_helper() -> None:
+    requests: List[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "thingName": "door-123",
+                    "shadow": {
+                        "state": {
+                            "reported": {"door": {"mode": SMARTDOOR_MODE_SMART}}
+                        }
+                    },
+                }
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = _build_client(http_client)
+        door = await client.smart_mode_smartdoor("door-123")
+
+    assert [req.method for req in requests] == ["PATCH", "GET"]
+    assert str(requests[0].url) == (
+        PETSAFE_API_BASE + "smartdoor/product/product/door-123/shadow"
+    )
+    assert _decode_request_body(requests[0]) == {
+        "door": {"mode": SMARTDOOR_MODE_SMART}
+    }
+    assert door.mode == SMARTDOOR_MODE_SMART
