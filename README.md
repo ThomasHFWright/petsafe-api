@@ -188,5 +188,21 @@ litterbox.reset()
 ```
 
 ## Contributing
-All contributions are welcome. 
+All contributions are welcome.
 Please, feel free to create a pull request!
+
+## Integration tests
+
+Interactive login tests live in `tests/integration/test_login.py`. They require
+an interactive terminal because the suite prompts for your account email and the
+verification code that PetSafe emails to you. Run them from a VS Code terminal
+inside the devcontainer so pytest can access the virtual environment configured
+by the workspace:
+
+```bash
+pytest tests/integration/test_login.py
+```
+
+The first run saves your credentials and tokens to
+`~/.petsafe_integration_secrets.json`; later runs reuse those tokens
+automatically and only prompt again if they expire.
