@@ -14,9 +14,6 @@ from .const import (
     PETSAFE_API_BASE,
     PETSAFE_CLIENT_ID,
     PETSAFE_REGION,
-    SMARTDOOR_MODE_MANUAL_LOCKED,
-    SMARTDOOR_MODE_MANUAL_UNLOCKED,
-    SMARTDOOR_MODE_SMART,
 )
 
 
@@ -87,63 +84,6 @@ class PetSafeClient:
         data = json.loads(content)
         devices = data.get("data", data)
         return [DeviceSmartDoor(self, door_data) for door_data in devices]
-
-    async def get_smartdoor(self, thing_name: str) -> DeviceSmartDoor:
-        """Fetch the details for a single SmartDoor identified by ``thing_name``."""
-
-        if not thing_name:
-            raise ValueError("thing_name must be provided")
-
-        response = await self.api_get(f"smartdoor/product/product/{thing_name}/")
-        content = response.content.decode("UTF-8")
-        data = json.loads(content)
-        payload = data.get("data", data)
-        return DeviceSmartDoor(self, payload)
-
-    async def set_smartdoor_mode(
-        self, thing_name: str, mode: str, *, update_data: bool = True
-    ) -> DeviceSmartDoor:
-        """Set the operating ``mode`` for the SmartDoor identified by ``thing_name``."""
-
-        if not thing_name:
-            raise ValueError("thing_name must be provided")
-
-        door = DeviceSmartDoor(self, {"thingName": thing_name})
-        await door.set_mode(mode, update_data=update_data)
-        return door
-
-    async def manual_lock_smartdoor(
-        self, thing_name: str, *, update_data: bool = True
-    ) -> DeviceSmartDoor:
-        """Lock the SmartDoor manually using the documented API."""
-
-        return await self.set_smartdoor_mode(
-            thing_name,
-            SMARTDOOR_MODE_MANUAL_LOCKED,
-            update_data=update_data,
-        )
-
-    async def manual_unlock_smartdoor(
-        self, thing_name: str, *, update_data: bool = True
-    ) -> DeviceSmartDoor:
-        """Unlock the SmartDoor manually using the documented API."""
-
-        return await self.set_smartdoor_mode(
-            thing_name,
-            SMARTDOOR_MODE_MANUAL_UNLOCKED,
-            update_data=update_data,
-        )
-
-    async def smart_mode_smartdoor(
-        self, thing_name: str, *, update_data: bool = True
-    ) -> DeviceSmartDoor:
-        """Enable Smart mode on the SmartDoor using the documented API."""
-
-        return await self.set_smartdoor_mode(
-            thing_name,
-            SMARTDOOR_MODE_SMART,
-            update_data=update_data,
-        )
 
     async def request_code(self) -> None:
         """
