@@ -78,7 +78,7 @@ async def test_device_smartdoor_mode_helpers_send_patch(
 
 
 @pytest.mark.asyncio
-async def test_client_manual_lock_refreshes_state() -> None:
+async def test_manual_lock_refreshes_state() -> None:
     requests: List[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -106,7 +106,7 @@ async def test_client_manual_lock_refreshes_state() -> None:
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as http_client:
         client = _build_client(http_client)
-        door = await client.manual_lock_smartdoor("door-123")
+        door = await DeviceSmartDoor.manual_lock_smartdoor(client, "door-123")
 
     assert [req.method for req in requests] == ["PATCH", "GET"]
     assert str(requests[0].url) == (
@@ -119,7 +119,7 @@ async def test_client_manual_lock_refreshes_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_client_manual_unlock_without_refresh() -> None:
+async def test_manual_unlock_without_refresh() -> None:
     requests: List[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -129,7 +129,9 @@ async def test_client_manual_unlock_without_refresh() -> None:
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as http_client:
         client = _build_client(http_client)
-        door = await client.manual_unlock_smartdoor("door-123", update_data=False)
+        door = await DeviceSmartDoor.manual_unlock_smartdoor(
+            client, "door-123", update_data=False
+        )
 
     assert [req.method for req in requests] == ["PATCH"]
     assert str(requests[0].url) == (
@@ -142,7 +144,7 @@ async def test_client_manual_unlock_without_refresh() -> None:
 
 
 @pytest.mark.asyncio
-async def test_client_smart_mode_helper() -> None:
+async def test_smart_mode_helper() -> None:
     requests: List[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -164,7 +166,7 @@ async def test_client_smart_mode_helper() -> None:
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as http_client:
         client = _build_client(http_client)
-        door = await client.smart_mode_smartdoor("door-123")
+        door = await DeviceSmartDoor.smart_mode_smartdoor(client, "door-123")
 
     assert [req.method for req in requests] == ["PATCH", "GET"]
     assert str(requests[0].url) == (
