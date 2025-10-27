@@ -473,6 +473,73 @@ class DeviceSmartDoor:
         self.client = client
         self.data = data
 
+    @classmethod
+    async def get_smartdoor(cls, client, thing_name: str) -> "DeviceSmartDoor":
+        """Fetch the details for a single SmartDoor identified by ``thing_name``."""
+
+        if not thing_name:
+            raise ValueError("thing_name must be provided")
+
+        response = await client.api_get(
+            f"smartdoor/product/product/{thing_name}/"
+        )
+        content = response.content.decode("UTF-8")
+        data = json.loads(content)
+        payload = data.get("data", data)
+        return cls(client, payload)
+
+    @classmethod
+    async def set_smartdoor_mode(
+        cls, client, thing_name: str, mode: str, *, update_data: bool = True
+    ) -> "DeviceSmartDoor":
+        """Set the operating ``mode`` for the SmartDoor identified by ``thing_name``."""
+
+        if not thing_name:
+            raise ValueError("thing_name must be provided")
+
+        door = cls(client, {"thingName": thing_name})
+        await door.set_mode(mode, update_data=update_data)
+        return door
+
+    @classmethod
+    async def manual_lock_smartdoor(
+        cls, client, thing_name: str, *, update_data: bool = True
+    ) -> "DeviceSmartDoor":
+        """Lock the SmartDoor manually using the documented API."""
+
+        return await cls.set_smartdoor_mode(
+            client,
+            thing_name,
+            SMARTDOOR_MODE_MANUAL_LOCKED,
+            update_data=update_data,
+        )
+
+    @classmethod
+    async def manual_unlock_smartdoor(
+        cls, client, thing_name: str, *, update_data: bool = True
+    ) -> "DeviceSmartDoor":
+        """Unlock the SmartDoor manually using the documented API."""
+
+        return await cls.set_smartdoor_mode(
+            client,
+            thing_name,
+            SMARTDOOR_MODE_MANUAL_UNLOCKED,
+            update_data=update_data,
+        )
+
+    @classmethod
+    async def smart_mode_smartdoor(
+        cls, client, thing_name: str, *, update_data: bool = True
+    ) -> "DeviceSmartDoor":
+        """Enable Smart mode on the SmartDoor using the documented API."""
+
+        return await cls.set_smartdoor_mode(
+            client,
+            thing_name,
+            SMARTDOOR_MODE_SMART,
+            update_data=update_data,
+        )
+
     def __str__(self) -> str:
         return self.to_json()
 
