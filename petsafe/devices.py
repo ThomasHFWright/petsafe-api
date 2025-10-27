@@ -793,6 +793,18 @@ class DeviceSmartDoor:
         return self.data.get("schedules", [])
 
     @property
+    def friendly_name(self) -> Optional[str]:
+        """Return the SmartDoor friendly name preference."""
+
+        return self.data.get("friendlyName")
+
+    @property
+    def timezone(self) -> Optional[str]:
+        """Return the SmartDoor timezone preference."""
+
+        return self.data.get("tz")
+
+    @property
     def mode(self) -> Optional[str]:
         """Return the currently reported operating mode."""
 
