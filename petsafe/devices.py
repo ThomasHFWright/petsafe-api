@@ -1,10 +1,17 @@
 import json
-from typing import Optional
+from typing import Any, Dict, Optional, Sequence
 
 from .const import (
+    SMARTDOOR_ACCESS_IN_ONLY,
+    SMARTDOOR_ACCESS_LOCKED,
+    SMARTDOOR_ACCESS_OUT_ONLY,
+    SMARTDOOR_ACCESS_UNLOCKED,
+    SMARTDOOR_FINAL_ACT_LOCKED,
+    SMARTDOOR_FINAL_ACT_UNLOCKED,
     SMARTDOOR_MODE_MANUAL_LOCKED,
     SMARTDOOR_MODE_MANUAL_UNLOCKED,
     SMARTDOOR_MODE_SMART,
+    SMARTDOOR_SCHEDULE_TYPE_SMART,
 )
 
 
@@ -556,6 +563,241 @@ class DeviceSmartDoor:
         payload = json.loads(response.content.decode("UTF-8"))
         self.data = payload.get("data", payload)
 
+    async def fetch_preferences(self) -> Dict[str, Any]:
+        """Fetch SmartDoor preferences and update local cache."""
+
+        response = await self.client.api_get(self.preferences_path + "/")
+        response.raise_for_status()
+        payload = json.loads(response.content.decode("UTF-8"))
+        data = payload.get("data", payload)
+
+        if isinstance(data, dict):
+            preference_data = data.get("preferenceData")
+            if isinstance(preference_data, dict):
+                self._ensure_preference_data().update(preference_data)
+
+        return data
+
+    async def set_friendly_name(
+        self, friendly_name: str, *, update_data: bool = True
+    ) -> Dict[str, Any]:
+        """Update the SmartDoor friendly name preference."""
+
+        if not friendly_name:
+            raise ValueError("friendly_name must be provided")
+
+        data = await self._patch_preferences({"friendlyName": friendly_name})
+        if update_data:
+            preference_data = data.get("preferenceData")
+            if isinstance(preference_data, dict):
+                self._ensure_preference_data().update(preference_data)
+        else:
+            self._ensure_preference_data()["friendlyName"] = friendly_name
+
+        return data
+
+    async def set_timezone(
+        self, timezone: str, *, update_data: bool = True
+    ) -> Dict[str, Any]:
+        """Update the SmartDoor timezone preference."""
+
+        if not timezone:
+            raise ValueError("timezone must be provided")
+
+        data = await self._patch_preferences({"tz": timezone})
+        if update_data:
+            preference_data = data.get("preferenceData")
+            if isinstance(preference_data, dict):
+                self._ensure_preference_data().update(preference_data)
+        else:
+            self._ensure_preference_data()["tz"] = timezone
+
+        return data
+
+    async def set_final_act(
+        self, final_act: str, *, update_data: bool = True
+    ) -> None:
+        """Set the SmartDoor final act power setting."""
+
+        if final_act not in (
+            SMARTDOOR_FINAL_ACT_LOCKED,
+            SMARTDOOR_FINAL_ACT_UNLOCKED,
+        ):
+            raise ValueError("final_act must be LOCKED or UNLOCKED")
+
+        response = await self.client.api_patch(
+            self.api_path + "shadow", data={"power": {"finalAct": final_act}}
+        )
+        response.raise_for_status()
+
+        if update_data:
+            await self.update_data()
+        else:
+            power_state = self._ensure_power_state()
+            power_state["finalAct"] = final_act
+
+    async def set_final_act_locked(self, *, update_data: bool = True) -> None:
+        """Configure the SmartDoor to lock when power changes."""
+
+        await self.set_final_act(
+            SMARTDOOR_FINAL_ACT_LOCKED, update_data=update_data
+        )
+
+    async def set_final_act_unlocked(self, *, update_data: bool = True) -> None:
+        """Configure the SmartDoor to unlock when power changes."""
+
+        await self.set_final_act(
+            SMARTDOOR_FINAL_ACT_UNLOCKED, update_data=update_data
+        )
+
+    async def fetch_schedules(self, *, update_data: bool = True) -> list[dict]:
+        """Retrieve SmartDoor schedules and optionally refresh the cache."""
+
+        from urllib.parse import quote_plus
+
+        path = (
+            "smartdoor/product/schedules?thingName="
+            + quote_plus(self.api_name)
+        )
+        response = await self.client.api_get(path)
+        response.raise_for_status()
+        payload = json.loads(response.content.decode("UTF-8"))
+        schedules = self._coerce_list(payload.get("data", payload))
+
+        if update_data:
+            self.data["schedules"] = schedules
+
+        return schedules
+
+    async def fetch_override_schedule(
+        self, *, update_data: bool = True
+    ) -> Dict[str, Any]:
+        """Retrieve the SmartDoor override schedule."""
+
+        response = await self.client.api_get(
+            f"smartdoor/product/override/schedules/{self.api_name}"
+        )
+        response.raise_for_status()
+        payload = json.loads(response.content.decode("UTF-8"))
+        data = payload.get("data", payload)
+
+        if update_data and isinstance(data, dict):
+            self.data["overrideSchedule"] = data
+
+        return data if isinstance(data, dict) else {}
+
+    async def set_override_access(
+        self, access: int, *, update_data: bool = True
+    ) -> Dict[str, Any]:
+        """Set the SmartDoor override access level."""
+
+        access_value = int(access)
+        if access_value not in (
+            SMARTDOOR_ACCESS_LOCKED,
+            SMARTDOOR_ACCESS_IN_ONLY,
+            SMARTDOOR_ACCESS_OUT_ONLY,
+            SMARTDOOR_ACCESS_UNLOCKED,
+        ):
+            raise ValueError("access must be a valid SmartDoor access level")
+
+        payload = {"thingName": self.api_name, "access": access_value}
+        response = await self.client.api_patch(
+            "smartdoor/product/override/schedules", data=payload
+        )
+        response.raise_for_status()
+        data = json.loads(response.content.decode("UTF-8")).get("data", {})
+
+        if update_data and isinstance(data, dict):
+            self.data["overrideSchedule"] = data
+        elif isinstance(data, dict):
+            self.data.setdefault("overrideSchedule", {}).update(data)
+
+        return data if isinstance(data, dict) else {}
+
+    async def create_or_update_schedule(
+        self,
+        *,
+        title: str,
+        day_of_week: str,
+        start_time: str,
+        access: int,
+        pet_ids: Sequence[str],
+        is_enabled: bool = True,
+        schedule_type: str = SMARTDOOR_SCHEDULE_TYPE_SMART,
+        schedule_id: Optional[str] = None,
+        update_data: bool = True,
+    ) -> list[dict]:
+        """Create or update a SmartDoor schedule entry."""
+
+        if not title:
+            raise ValueError("title must be provided")
+        if not day_of_week or len(day_of_week) != 7:
+            raise ValueError("day_of_week must be a 7 character string")
+        if not start_time:
+            raise ValueError("start_time must be provided")
+
+        if pet_ids is None:
+            raise ValueError("pet_ids must be provided")
+
+        access_value = int(access)
+        if access_value not in (
+            SMARTDOOR_ACCESS_LOCKED,
+            SMARTDOOR_ACCESS_IN_ONLY,
+            SMARTDOOR_ACCESS_OUT_ONLY,
+            SMARTDOOR_ACCESS_UNLOCKED,
+        ):
+            raise ValueError("access must be a valid SmartDoor access level")
+
+        if not schedule_type:
+            raise ValueError("schedule_type must be provided")
+
+        payload: Dict[str, Any] = {
+            "title": title,
+            "thingName": self.api_name,
+            "isEnabled": bool(is_enabled),
+            "dayOfWeek": day_of_week,
+            "startTime": start_time,
+            "access": access_value,
+            "petIds": list(pet_ids),
+            "scheduleType": schedule_type,
+        }
+
+        if schedule_id:
+            payload["scheduleId"] = schedule_id
+
+        response = await self.client.api_post(
+            "smartdoor/product/schedules", data=payload
+        )
+        response.raise_for_status()
+        data = json.loads(response.content.decode("UTF-8"))
+        schedules = self._coerce_list(data.get("data", data))
+
+        if update_data:
+            self.data["schedules"] = schedules
+
+        return schedules
+
+    async def delete_schedule(
+        self, schedule_id: str, *, update_data: bool = True
+    ) -> list[dict]:
+        """Delete a SmartDoor schedule by identifier."""
+
+        if not schedule_id:
+            raise ValueError("schedule_id must be provided")
+
+        from urllib.parse import quote_plus
+
+        path = f"smartdoor/product/schedules/{quote_plus(schedule_id)}"
+        response = await self.client.api_delete(path)
+        response.raise_for_status()
+        data = json.loads(response.content.decode("UTF-8"))
+        schedules = self._coerce_list(data.get("data", data))
+
+        if update_data:
+            self.data["schedules"] = schedules
+
+        return schedules
+
     async def get_activity(
         self, *, limit: Optional[int] = None, since: Optional[str] = None
     ) -> list[dict]:
@@ -642,6 +884,12 @@ class DeviceSmartDoor:
         return f"smartdoor/product/product/{self.api_name}/"
 
     @property
+    def preferences_path(self) -> str:
+        """Return the API path used for SmartDoor preferences."""
+
+        return f"preferences/product/smartdoor/{self.api_name}"
+
+    @property
     def schedules(self) -> list[dict]:
         """Return the configured SmartDoor schedules."""
 
@@ -701,6 +949,15 @@ class DeviceSmartDoor:
 
         return self._reported_state().get("connectionStatus")
 
+    async def _patch_preferences(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        response = await self.client.api_patch(
+            self.preferences_path, data=payload
+        )
+        response.raise_for_status()
+        data = json.loads(response.content.decode("UTF-8"))
+        result = data.get("data", data)
+        return result if isinstance(result, dict) else {}
+
     def _reported_state(self) -> dict:
         return (
             self.data.get("shadow", {})
@@ -722,3 +979,20 @@ class DeviceSmartDoor:
         state = shadow.setdefault("state", {})
         reported = state.setdefault("reported", {})
         return reported.setdefault("door", {})
+
+    def _ensure_power_state(self) -> dict:
+        shadow = self.data.setdefault("shadow", {})
+        state = shadow.setdefault("state", {})
+        reported = state.setdefault("reported", {})
+        return reported.setdefault("power", {})
+
+    def _ensure_preference_data(self) -> dict:
+        return self.data.setdefault("preferenceData", {})
+
+    @staticmethod
+    def _coerce_list(value: Any) -> list[dict]:
+        if isinstance(value, list):
+            return value
+        if value is None:
+            return []
+        return [value]

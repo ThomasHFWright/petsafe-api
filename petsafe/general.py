@@ -16,3 +16,12 @@ async def list_product_sharing(client: "PetSafeClient") -> List[Dict[str, Any]]:
     payload = json.loads(response.content.decode("UTF-8"))
     data = payload.get("data", payload)
     return data if isinstance(data, list) else [data]
+
+
+async def get_account_details(client: "PetSafeClient") -> Dict[str, Any]:
+    """Return account metadata for the authenticated user."""
+
+    response = await client.api_get("directory/account")
+    payload = json.loads(response.content.decode("UTF-8"))
+    data = payload.get("data", payload)
+    return data if isinstance(data, dict) else {}
