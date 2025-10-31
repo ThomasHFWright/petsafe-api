@@ -87,19 +87,7 @@ class PetSafeClient:
         if not doors:
             return []
 
-        preferences = await asyncio.gather(
-            *(door.get_preferences() for door in doors)
-        )
-
-        for door, prefs in zip(doors, preferences):
-            if isinstance(prefs, dict):
-                friendly_name = prefs.get("friendlyName")
-                if friendly_name is not None:
-                    door.data["friendlyName"] = friendly_name
-
-                timezone = prefs.get("tz")
-                if timezone is not None:
-                    door.data["tz"] = timezone
+        await asyncio.gather(*(door._merge_preferences() for door in doors))
 
         return doors
 

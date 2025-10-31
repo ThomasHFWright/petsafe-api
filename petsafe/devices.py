@@ -488,7 +488,9 @@ class DeviceSmartDoor:
         content = response.content.decode("UTF-8")
         data = json.loads(content)
         payload = data.get("data", data)
-        return cls(client, payload)
+        door = cls(client, payload)
+        await door._merge_preferences()
+        return door
 
     @classmethod
     async def set_smartdoor_mode(
@@ -557,6 +559,7 @@ class DeviceSmartDoor:
         response.raise_for_status()
         payload = json.loads(response.content.decode("UTF-8"))
         self.data = payload.get("data", payload)
+        await self._merge_preferences()
 
     async def get_preferences(self) -> dict:
         """Return the SmartDoor preference data."""
@@ -568,6 +571,15 @@ class DeviceSmartDoor:
         if isinstance(data, dict):
             return data
         raise ValueError("Unexpected response payload for SmartDoor preferences")
+
+    async def _merge_preferences(self) -> None:
+        """Fetch preferences and merge friendly name/timezone into ``self.data``."""
+
+        preferences = await self.get_preferences()
+
+        for key in ("friendlyName", "tz"):
+            if key in preferences:
+                self.data[key] = preferences[key]
 
     async def update_friendly_name(
         self, friendly_name: str, *, update_data: bool = True
