@@ -16,3 +16,14 @@ async def list_product_sharing(client: "PetSafeClient") -> List[Dict[str, Any]]:
     payload = json.loads(response.content.decode("UTF-8"))
     data = payload.get("data", payload)
     return data if isinstance(data, list) else [data]
+
+
+async def get_account_details(client: "PetSafeClient") -> Dict[str, Any]:
+    """Return the account details for the authenticated PetSafe user."""
+
+    response = await client.api_get("directory/account")
+    payload = json.loads(response.content.decode("UTF-8"))
+    data = payload.get("data", payload)
+    if isinstance(data, dict):
+        return data
+    raise ValueError("Unexpected response payload for account details")

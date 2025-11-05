@@ -83,7 +83,25 @@ class PetSafeClient:
         content = response.content.decode("UTF-8")
         data = json.loads(content)
         devices = data.get("data", data)
-        return [DeviceSmartDoor(self, door_data) for door_data in devices]
+        doors = [DeviceSmartDoor(self, door_data) for door_data in devices]
+        if not doors:
+            return []
+
+        preferences = await asyncio.gather(
+            *(door.get_preferences() for door in doors)
+        )
+
+        for door, prefs in zip(doors, preferences):
+            if isinstance(prefs, dict):
+                friendly_name = prefs.get("friendlyName")
+                if friendly_name is not None:
+                    door.data["friendlyName"] = friendly_name
+
+                timezone = prefs.get("tz")
+                if timezone is not None:
+                    door.data["tz"] = timezone
+
+        return doors
 
     async def request_code(self) -> None:
         """
