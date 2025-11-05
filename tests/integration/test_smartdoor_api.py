@@ -75,7 +75,7 @@ async def test_get_single_smartdoor(authenticated_client: PetSafeClient) -> None
     payload = response.json()
     print(_dump_response(payload))
 
-    fresh = await authenticated_client.get_smartdoor(door.api_name)
+    fresh = await DeviceSmartDoor.get_smartdoor(authenticated_client, door.api_name)
     assert isinstance(fresh, DeviceSmartDoor)
     assert fresh.api_name == door.api_name
 
