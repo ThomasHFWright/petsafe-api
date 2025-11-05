@@ -566,7 +566,7 @@ class DeviceSmartDoor:
         payload = json.loads(response.content.decode("UTF-8"))
         data = payload.get("data", payload)
         if isinstance(data, dict):
-            return data
+            return self._normalize_preferences(data)
         raise ValueError("Unexpected response payload for SmartDoor preferences")
 
     async def update_friendly_name(
@@ -900,5 +900,15 @@ class DeviceSmartDoor:
         payload = json.loads(response.content.decode("UTF-8"))
         data = payload.get("data", payload)
         if isinstance(data, dict):
-            return data
+            return self._normalize_preferences(data)
         raise ValueError("Unexpected response payload for SmartDoor preferences")
+
+    @staticmethod
+    def _normalize_preferences(data: dict) -> dict:
+        """Flatten preference data returned by the SmartDoor API."""
+
+        normalized = dict(data)
+        preference_data = normalized.pop("preferenceData", None)
+        if isinstance(preference_data, dict):
+            normalized.update(preference_data)
+        return normalized
