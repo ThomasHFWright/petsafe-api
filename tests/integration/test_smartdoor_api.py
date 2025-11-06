@@ -91,14 +91,9 @@ async def test_smartdoor_preferences_populated(
     smartdoors = await authenticated_client.get_smartdoors()
     door = _ensure_smartdoor_available(smartdoors)
 
-    print(
-        "SmartDoor attributes:",
-        {
-            "api_name": door.api_name,
-            "friendly_name": door.friendly_name,
-            "timezone": door.timezone,
-        },
-    )
+    print("SmartDoor api_name:", door.api_name)
+    print("SmartDoor friendly_name:", door.friendly_name)
+    print("SmartDoor timezone:", door.timezone)
     assert door.friendly_name, "Expected SmartDoor friendly name populated from API"
     assert door.timezone, "Expected SmartDoor timezone populated from API"
 
