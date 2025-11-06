@@ -85,6 +85,26 @@ async def test_get_single_smartdoor(authenticated_client: PetSafeClient) -> None
 
 
 @pytest.mark.asyncio
+async def test_smartdoor_preferences_populated(
+    authenticated_client: PetSafeClient,
+) -> None:
+    smartdoors = await authenticated_client.get_smartdoors()
+    door = _ensure_smartdoor_available(smartdoors)
+
+    print("SmartDoor api_name:", door.api_name)
+    print("SmartDoor friendly_name:", door.friendly_name)
+    print("SmartDoor timezone:", door.timezone)
+    assert door.friendly_name, "Expected SmartDoor friendly name populated from API"
+    assert door.timezone, "Expected SmartDoor timezone populated from API"
+
+    preferences = await door.get_preferences()
+
+    print("SmartDoor preferences:", preferences)
+    assert preferences.get("friendlyName") == door.friendly_name
+    assert preferences.get("tz") == door.timezone
+
+
+@pytest.mark.asyncio
 async def test_smartdoor_activity(authenticated_client: PetSafeClient) -> None:
     smartdoors = await authenticated_client.get_smartdoors()
     door = _ensure_smartdoor_available(smartdoors)
