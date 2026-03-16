@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="petsafe-api",
-    version="3.0.1",
+    version="3.0.3",
     author="Jordan Stremming & Dominick Meglio & Thomas Wright",
     license="MIT",
     author_email="thomas.h.f.wright@gmail.com",
