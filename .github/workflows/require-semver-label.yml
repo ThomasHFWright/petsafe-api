@@ -1,0 +1,35 @@
+name: Require Semver Label
+
+on:
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - labeled
+      - unlabeled
+      - edited
+
+jobs:
+  validate-label:
+    name: Validate major/minor/patch label
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check PR labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const requiredLabels = ['major', 'minor', 'patch'];
+            const labels = context.payload.pull_request.labels.map((label) => label.name.toLowerCase());
+            const matched = requiredLabels.filter((label) => labels.includes(label));
+
+            if (matched.length !== 1) {
+              core.setFailed(
+                `PRs targeting master must include exactly one of these labels: ${requiredLabels.join(', ')}. Found: ${matched.length ? matched.join(', ') : 'none'}`
+              );
+            } else {
+              core.info(`Found required semver label: ${matched[0]}`);
+            }
