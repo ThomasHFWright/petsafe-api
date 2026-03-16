@@ -1,5 +1,6 @@
 import sys
 import argparse
+import asyncio
 
 from petsafe import PetSafeClient
 
@@ -17,20 +18,29 @@ if len(sys.argv) < 2:
 # parse for arguments
 args = parser.parse_args()
 
-client = PetSafeClient(email=args.email)
-client.request_code()
-print("Code requested, please check your email.")
-print("")
+async def main() -> None:
+    client = PetSafeClient(email=args.email)
+    await client.request_code()
+    print("Code requested, please check your email.")
+    print("")
 
-code = input("Enter email code: ")
-client.request_tokens_from_code(code)
+    try:
+        code = input("Enter email code: ")
+    except EOFError:
+        print("\nNo code entered (EOF). Exiting.")
+        return
 
-print("")
-print("IdToken:")
-print(client.id_token)
-print("")
-print("AccessToken:")
-print(client.access_token)
-print("")
-print("RefreshToken:")
-print(client.refresh_token)
+    await client.request_tokens_from_code(code)
+
+    print("")
+    print("IdToken:")
+    print(client.id_token)
+    print("")
+    print("AccessToken:")
+    print(client.access_token)
+    print("")
+    print("RefreshToken:")
+    print(client.refresh_token)
+
+
+asyncio.run(main())
