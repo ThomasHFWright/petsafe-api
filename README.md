@@ -1,10 +1,22 @@
-# PetSafe Smart Feed - Python API
-Connect and control a PetSafe Smart Feed device using the PetSafe-SmartFeed API.
+# petsafe-api
+Connect and control PetSafe Smart Feed, ScoopFree, and Smart Door devices using the PetSafe API.
 
 > **BREAKING CHANGE:** Version 2.0 uses the new PetSafe API.
 > You will need to request new tokens.
 
 > PetSafe will lock your account if you request data more often than once per 5 minutes.
+
+## Project rename
+This repository is now named **petsafe-api** and the published package name is **petsafe-api** on PyPI.
+
+> Import paths are unchanged: continue using `import petsafe` and `python -m petsafe`.
+
+## Acknowledgements
+This project builds on the excellent prior work from the original developers:
+- https://github.com/Techzune/petsafe_smartfeed
+- https://github.com/dcmeglio/petsafe
+
+Thank you to both projects for building the API integrations for existing feeder and ScoopFree functionality. This repository includes all of that previous work, with Smart Door API support added on top.
 
 ## Installation
 `pip install petsafe-api`
