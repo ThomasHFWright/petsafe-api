@@ -24,7 +24,12 @@ async def main() -> None:
     print("Code requested, please check your email.")
     print("")
 
-    code = input("Enter email code: ")
+    try:
+        code = input("Enter email code: ")
+    except EOFError:
+        print("\nNo code entered (EOF). Exiting.")
+        return
+
     await client.request_tokens_from_code(code)
 
     print("")
