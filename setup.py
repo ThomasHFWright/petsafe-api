@@ -4,15 +4,15 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="petsafe",
-    version="2.0.7",
-    author="Jordan Stremming & Dominick Meglio",
+    name="petsafe-api",
+    version="3.0.1",
+    author="Jordan Stremming & Dominick Meglio & Thomas Wright",
     license="MIT",
-    author_email="dmeglio@gmail.com",
-    description="Provides ability to connect and control a PetSafe Smart Feed and Scoopfree device using the PetSafe API.",
+    author_email="thomas.h.f.wright@gmail.com",
+    description="Provides ability to connect and control a PetSafe Smart Feed, Scoopfree, and Smart Door devices using the PetSafe API.",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/dcmeglio/petsafe",
+    url="https://github.com/ThomasHFWright/petsafe-api",
     packages=setuptools.find_packages(),
     install_requires=["httpx", "botocore"],
     classifiers=[

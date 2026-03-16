@@ -5,3 +5,5 @@ dist/*
 petsafe.egg-info/*
 token.txt
 sample.py
+.venv
+*/__pycache__/*
