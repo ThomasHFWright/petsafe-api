@@ -24,6 +24,56 @@ Thank you to both projects for building the API integrations for existing feeder
 If installing from source code,
 `python setup.py install`
 
+## Local SmartDoor control and provisioning (3.1.0)
+
+`LocalPetSafeClient` connects to a compatible local server using its HTTPS origin
+and API token. It does not use a PetSafe vendor login, and returns the same
+`DeviceSmartDoor` objects as the cloud client, so existing methods are reused:
+
+```python
+import asyncio
+import petsafe
+
+
+async def main() -> None:
+    async with petsafe.LocalPetSafeClient(
+        "https://petsafe.example", "LOCAL_API_TOKEN"
+    ) as client:
+        door = (await client.get_smartdoors())[0]
+        await door.lock()
+        await door.unlock()
+        await door.smart_mode()
+
+
+asyncio.run(main())
+```
+
+BLE provisioning dependencies are optional: `pip install petsafe-api[ble]`.
+[`SetupClient`](petsafe/setup.py) creates a server-correlated setup session;
+the BLE entry point is
+[`provision_smartdoor`](petsafe/provisioning.py), not a `BLEProvisioner` class:
+
+```python
+from petsafe import SetupClient
+from petsafe.provisioning import WifiNetwork, provision_smartdoor
+
+
+async def provision() -> None:
+    async with SetupClient(SERVER_ORIGIN, API_TOKEN) as setup:
+        session = await setup.create(DEVICE_ID, "provision")
+        result = await provision_smartdoor(
+            ble_device,
+            session.endpoint,
+            WifiNetwork(ssid=SSID, password=PASSWORD, bssid=BSSID_BYTES),
+            confirm=setup.confirmation(session),
+        )
+```
+
+Local operation still requires a compatible server and local DNS. Provisioning
+also requires supported BLE hardware or a nearby proxy and an HTTPS hostname and
+certificate trusted by the SmartDoor; hardware testing used an Amazon-trusted
+certificate. A raw IP address is not a supported or promised substitute.
+
 ## Login tokens
 You **must** use tokens to interact with the PetSafe Smart-Feed API.  
 There are two methods to retrieve tokens:
