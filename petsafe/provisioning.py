@@ -51,7 +51,6 @@ class WifiNetwork:
     ssid: str
     password: str = field(repr=False)
     bssid: bytes
-    group: Any
     security: int = SUPPORTED_SECURITY
 
 
@@ -111,6 +110,16 @@ def _decode(payload: bytes) -> dict[str, Any]:
     return value
 
 
+def _append_fragment(buffer: bytearray, packet: bytes, previous: Optional[int], phase: str) -> int:
+    prefix = int.from_bytes(packet[:2], "big") if len(packet) > 2 else -1
+    if (not 0xff00 <= prefix <= 0xfffe
+            or previous is not None and prefix != previous + 1
+            or len(buffer) + len(packet) - 2 > MAX_RESPONSE):
+        raise InvalidResponseError("invalid or oversized response frame", phase)
+    buffer.extend(packet[2:])
+    return prefix
+
+
 def _validate(endpoint: str, network: WifiNetwork, timeouts: ProvisioningTimeouts) -> None:
     parsed = urlsplit(endpoint)
     try:
@@ -134,13 +143,6 @@ def _validate(endpoint: str, network: WifiNetwork, timeouts: ProvisioningTimeout
         raise ProvisioningError("BSSID must be six bytes")
     if network.security != SUPPORTED_SECURITY:
         raise ProvisioningError("unsupported Wi-Fi security")
-    cbor2, _, _, _ = _imports()
-    try:
-        encoded_group = cbor2.dumps(network.group, canonical=True)
-    except Exception as error:
-        raise ProvisioningError("Wi-Fi group must be CBOR-encodable") from error
-    if len(encoded_group) > 256:
-        raise ProvisioningError("Wi-Fi group is too large")
     numbers = (timeouts.overall, timeouts.connect, timeouts.phase, timeouts.scan,
                timeouts.confirmation, timeouts.connection_backoff)
     if any(not isinstance(value, (int, float)) or isinstance(value, bool)
@@ -230,21 +232,25 @@ class _Sequence:
         characteristic = self.characteristic(client, suffix)
         future = asyncio.get_running_loop().create_future()
         buffer, active = bytearray(), True
+        previous = None
 
         def notified(_sender: Any, data: bytearray) -> None:
+            nonlocal previous
             if not active or future.done():
                 return
             packet = bytes(data)
             if packet == b"\xff\xff":
                 try:
+                    if previous != 0xfffe:
+                        raise InvalidResponseError("incomplete response frame sequence", self.phase)
                     future.set_result(_decode(bytes(buffer)))
                 except BaseException as error:
                     future.set_exception(error)
-            elif (len(packet) <= 2 or packet[:2] not in (b"\xff\xfe", b"\xff\xfd")
-                  or len(buffer) + len(packet) - 2 > MAX_RESPONSE):
-                future.set_exception(InvalidResponseError("invalid or oversized response frame", self.phase))
             else:
-                buffer.extend(packet[2:])
+                try:
+                    previous = _append_fragment(buffer, packet, previous, self.phase)
+                except BaseException as error:
+                    future.set_exception(error)
 
         original = None
         try:
@@ -358,25 +364,30 @@ class _Sequence:
         characteristic = self.characteristic(client, "01")
         networks: list[dict[str, Any]] = []
         buffer, active = bytearray(), True
+        previous = None
         scan_error = asyncio.get_running_loop().create_future()
 
         def scanned(_sender: Any, data: bytearray) -> None:
+            nonlocal previous
             if not active:
                 return
             packet = bytes(data)
             if packet == b"\xff\xff":
                 try:
+                    if previous != 0xfffe:
+                        raise InvalidResponseError("incomplete Wi-Fi scan frame sequence", self.phase)
                     networks.append(_decode(bytes(buffer)))
                 except BaseException as error:
                     if not scan_error.done():
                         scan_error.set_exception(error)
                 buffer.clear()
-            elif (len(packet) <= 2 or packet[:2] not in (b"\xff\xfe", b"\xff\xfd")
-                  or len(buffer) + len(packet) - 2 > MAX_RESPONSE):
-                if not scan_error.done():
-                    scan_error.set_exception(InvalidResponseError("invalid Wi-Fi scan frame", self.phase))
+                previous = None
             else:
-                buffer.extend(packet[2:])
+                try:
+                    previous = _append_fragment(buffer, packet, previous, self.phase)
+                except BaseException as error:
+                    if not scan_error.done():
+                        scan_error.set_exception(error)
 
         original = None
         sleeper = None
@@ -414,13 +425,18 @@ class _Sequence:
                       and isinstance(item.get("p"), int) and -127 <= item["p"] <= 0]
         if not candidates:
             raise ProvisioningError("configured secured network was not visible", self.phase)
-        bssid = max(candidates, key=lambda item: (item["b"] == self.network.bssid, item["p"]))["b"]
+        selected = max(candidates, key=lambda item: (item["b"] == self.network.bssid, item["p"]))
+        group = selected.get("g")
+        cbor2, _, _, _ = _imports()
+        if type(group) is not int or len(cbor2.dumps(group, canonical=True)) > 256:
+            raise InvalidResponseError("selected Wi-Fi network has invalid group", self.phase)
+        bssid = selected["b"]
         encrypted = base64.encodebytes(key.encrypt(self.network.password.encode(), PKCS1v15())).decode()
 
         self.phase = "url"
         await self.ack(client, "05", {"u": self.endpoint}, mtu)
         self.phase = "wifi"
-        await self.ack(client, "09", {"g": self.network.group, "r": self.network.ssid,
+        await self.ack(client, "09", {"g": group, "r": self.network.ssid,
                        "b": bssid.replace(b"\x00", b"\x55"), "m": encrypted,
                        "q": self.network.security}, mtu)
         if not await self.status(client):

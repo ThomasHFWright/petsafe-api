@@ -23,7 +23,7 @@ from petsafe.provisioning import (
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 PUBLIC_KEY = KEY.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
 ENDPOINT = "https://setup.example.test/provision/session"
-NETWORK = WifiNetwork("Test Network", "synthetic-password", b"\x10\x20\x30\x40\x50\x60", 7)
+NETWORK = WifiNetwork("Test Network", "synthetic-password", b"\x10\x20\x30\x40\x50\x60")
 FAST = ProvisioningTimeouts(overall=.5, connect=.05, phase=.05, scan=.001,
                             confirmation=.05, connection_backoff=0)
 
@@ -46,7 +46,7 @@ class FakeGatt:
     def __init__(self, *, wifi_ack=1, finish_timeout=False, malformed_key=False,
                  connect_error=False, stall=False, statuses=None,
                  partial_connect=False, hanging_disconnect=False,
-                 notify_stall=None):
+                 notify_stall=None, oversized_key=False, scan_group=-1):
         self.services = Services()
         self.is_connected = False
         self.callbacks = {}
@@ -61,11 +61,15 @@ class FakeGatt:
         self.partial_connect = partial_connect
         self.hanging_disconnect = hanging_disconnect
         self.notify_stall = notify_stall
+        self.oversized_key = oversized_key
+        self.scan_group = scan_group
         self.disconnected = False
         self.disconnect_calls = 0
         self.finished = 0
         self.finish_payload_frames = 0
         self.key_requests = 0
+        self.notification_prefixes = {}
+        self.wifi_payload = None
 
     async def connect(self):
         if self.connect_error:
@@ -96,9 +100,11 @@ class FakeGatt:
             return
         raw = cbor2.dumps(value, canonical=True)
         if fragmented:
-            cut = max(1, len(raw) // 2)
-            callback(suffix, b"\xff\xfd" + raw[:cut])
-            callback(suffix, b"\xff\xfe" + raw[cut:])
+            chunks = [raw[index:index + 18] for index in range(0, len(raw), 18)]
+            prefixes = list(range(0xffff - len(chunks), 0xffff))
+            self.notification_prefixes[suffix] = prefixes
+            for prefix, chunk in zip(prefixes, chunks):
+                callback(suffix, prefix.to_bytes(2) + chunk)
         else:
             callback(suffix, b"\x00\x00" + raw)
         callback(suffix, b"\xff\xff")
@@ -130,14 +136,23 @@ class FakeGatt:
                 if self.malformed_key:
                     callback = self.callbacks[suffix]
                     callback(suffix, b"\x01\x02bad")
+                elif self.oversized_key:
+                    callback = self.callbacks[suffix]
+                    for prefix in range(0xff1b, 0xffff):
+                        callback(suffix, prefix.to_bytes(2, "big") + b"x" * 18)
                 else:
                     self.notify(suffix, {"v": PUBLIC_KEY})
             elif suffix == "01":
-                self.notify(suffix, {"r": NETWORK.ssid, "q": 3, "b": NETWORK.bssid, "p": -40})
+                network = {"r": NETWORK.ssid, "q": 3, "b": NETWORK.bssid, "p": -40,
+                           "x": "synthetic"}
+                if self.scan_group is not None:
+                    network["g"] = self.scan_group
+                self.notify(suffix, network)
             elif suffix == "05":
                 self.notify(suffix, {"s": 1})
             elif suffix == "09":
                 assert payload["m"] != NETWORK.password
+                self.wifi_payload = payload
                 self.notify(suffix, {"s": self.wifi_ack})
             elif suffix == "07":
                 self.finished += 1
@@ -161,6 +176,9 @@ def test_success_requires_server_confirmation_and_uses_uuid_characteristics():
     result = run(lambda device: client, confirmed)
     assert result.state is ProvisioningState.COMPLETE
     assert client.finished == 1 and client.disconnected and client.key_requests == 1
+    assert client.notification_prefixes["08"] == list(range(0xffe5, 0xffff))
+    assert client.notification_prefixes["01"] == [0xfffc, 0xfffd, 0xfffe]
+    assert client.wifi_payload["g"] == -1
     assert MTU_UUID in client.services.requested
 
 
@@ -224,14 +242,18 @@ def test_status_rejects_protocol_failure_and_malformed_value():
 
 
 def test_fragment_validation_and_input_validation():
-    with pytest.raises(InvalidResponseError):
-        run(lambda device: FakeGatt(malformed_key=True))
+    for client in (FakeGatt(malformed_key=True), FakeGatt(oversized_key=True)):
+        with pytest.raises(InvalidResponseError):
+            run(lambda device, client=client: client)
+    for group in (None, True, "-1"):
+        with pytest.raises(InvalidResponseError):
+            run(lambda device, group=group: FakeGatt(scan_group=group))
     with pytest.raises(ProvisioningError):
         asyncio.run(provision_smartdoor(object(), "http://user:pass@example.test/x",
                                         NETWORK, client_factory=FakeGatt))
     with pytest.raises(ProvisioningError):
         asyncio.run(provision_smartdoor(object(), ENDPOINT,
-                                        WifiNetwork("x", "long-enough", b"123456", 1, 0),
+                                        WifiNetwork("x", "long-enough", b"123456", 0),
                                         client_factory=FakeGatt))
     for value in (float("nan"), float("inf"), -1):
         invalid = ProvisioningTimeouts(connection_backoff=value)
