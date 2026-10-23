@@ -29,7 +29,9 @@ FAST = ProvisioningTimeouts(overall=.5, connect=.05, phase=.05, scan=.001,
 
 
 class Services:
-    UUIDS = {MTU_UUID, *(PREFIX + suffix for suffix in
+    # Independent firmware service map: a typo in production UUIDs must fail.
+    UUIDS = {"8a7f1168-48af-4efb-83b5-e679f932ff03",
+             *("3113a187-4b9f-4f9a-aa83-c614e11bff" + suffix for suffix in
                          ("90", "08", "10", "01", "05", "09", "06", "07"))}
 
     def __init__(self):
@@ -187,11 +189,18 @@ def test_lost_finish_ack_accepts_delayed_fresh_server_confirmation():
 
 
 def test_finish_only_recovery_checks_fresh_status_first():
-    clients = [FakeGatt(finish_timeout=True), FakeGatt()]
-    confirmations = iter((False, True))
+    first, recovery = FakeGatt(finish_timeout=True), FakeGatt()
+    clients = [first, recovery]
+    first_check = None
 
     async def confirmed():
-        return next(confirmations)
+        nonlocal first_check
+        if first_check is None:
+            first_check = time.monotonic()
+        if recovery.finished:
+            assert time.monotonic() - first_check >= FAST.confirmation
+            return True
+        return False
 
     result = run(lambda device: clients.pop(0), confirmed)
     assert result.state is ProvisioningState.COMPLETE and result.finish_retried
@@ -345,3 +354,21 @@ def test_confirmation_requires_literal_true():
         return {"connected": True}
 
     assert run(lambda device: FakeGatt(), truthy_but_not_confirmation).state is ProvisioningState.PENDING
+
+
+def test_negative_server_checks_wait_for_late_success_without_finish_replay():
+    client = FakeGatt(finish_timeout=True)
+    first_check = None
+    checks = 0
+
+    async def confirmed():
+        nonlocal first_check, checks
+        checks += 1
+        if first_check is None:
+            first_check = time.monotonic()
+        return time.monotonic() - first_check >= .015
+
+    result = run(lambda device: client, confirmed)
+    assert result.state is ProvisioningState.COMPLETE
+    assert checks > 1 and not result.finish_retried
+    assert client.disconnect_calls == 1

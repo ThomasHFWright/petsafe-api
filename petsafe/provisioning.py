@@ -312,10 +312,17 @@ class _Sequence:
         if self.confirm is None:
             return False
         self.phase = "server_confirmation"
-        try:
-            return await self.wait(self.confirm(), self.timeouts.confirmation) is True
-        except ProvisioningTimeoutError:
-            return False
+        deadline = min(self.deadline, time.monotonic() + self.timeouts.confirmation)
+        while time.monotonic() < deadline:
+            try:
+                if await self.wait(self.confirm(), deadline - time.monotonic()) is True:
+                    return True
+            except ProvisioningTimeoutError:
+                return False
+            # A quick negative check is not evidence that finish needs replaying.
+            await asyncio.sleep(min(1.0, self.timeouts.confirmation / 10,
+                                    max(0, deadline - time.monotonic())))
+        return False
 
     async def full(self, client: Any) -> None:
         _, rsa, PKCS1v15, load_pem_public_key = _imports()
