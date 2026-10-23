@@ -51,7 +51,7 @@ asyncio.run(main())
 BLE provisioning dependencies are optional: `pip install petsafe-api[ble]`.
 [`SetupClient`](petsafe/setup.py) creates a server-correlated setup session;
 the BLE entry point is
-[`provision_smartdoor`](petsafe/provisioning.py), not a `BLEProvisioner` class:
+[`provision_smartdoor`](petsafe/provisioning.py):
 
 ```python
 from petsafe import SetupClient
@@ -69,12 +69,12 @@ async def provision() -> None:
         )
 ```
 
-Local operation still requires a compatible server and local DNS. Provisioning
+Local operation requires a compatible server and a hostname resolving to it. Provisioning
 also requires supported BLE hardware or a nearby proxy and an HTTPS hostname and
 certificate trusted by the SmartDoor; hardware testing used an Amazon-trusted
 certificate. A raw IP address is not a supported or promised substitute.
 
-## Login tokens
+## Cloud login tokens
 You **must** use tokens to interact with the PetSafe Smart-Feed API.  
 There are two methods to retrieve tokens:
 
