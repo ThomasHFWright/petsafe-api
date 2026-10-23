@@ -5,13 +5,15 @@ import asyncio
 import base64
 import io
 import inspect
+import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlsplit
 
 PREFIX = "3113a187-4b9f-4f9a-aa83-c614e11bff"
+MTU_UUID = "8a7f1168-48af-4efb-83b5-e679f932ff03"
 APPLICATION_MTU = 23
 MAX_RESPONSE = 4096
 SUPPORTED_SECURITY = 3
@@ -31,6 +33,10 @@ class WifiRejectedError(ProvisioningError):
     pass
 
 
+class WifiConnectionError(ProvisioningError):
+    pass
+
+
 class ProvisioningTimeoutError(ProvisioningError):
     pass
 
@@ -43,7 +49,7 @@ class ProvisioningState(str, Enum):
 @dataclass(frozen=True)
 class WifiNetwork:
     ssid: str
-    password: str
+    password: str = field(repr=False)
     bssid: bytes
     group: Any
     security: int = SUPPORTED_SECURITY
@@ -68,6 +74,9 @@ class ProvisioningResult:
     finish_retried: bool = False
 
 
+# The hook must return the literal bool True only for fresh, correlated server
+# evidence from this setup attempt. Cached state and truthy response objects do
+# not confirm provisioning.
 ConfirmationHook = Callable[[], Awaitable[bool]]
 ClientFactory = Callable[[Any], Any]
 
@@ -132,9 +141,16 @@ def _validate(endpoint: str, network: WifiNetwork, timeouts: ProvisioningTimeout
         raise ProvisioningError("Wi-Fi group must be CBOR-encodable") from error
     if len(encoded_group) > 256:
         raise ProvisioningError("Wi-Fi group is too large")
+    numbers = (timeouts.overall, timeouts.connect, timeouts.phase, timeouts.scan,
+               timeouts.confirmation, timeouts.connection_backoff)
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool)
+           or not math.isfinite(value) for value in numbers):
+        raise ProvisioningError("timeouts must be finite numbers")
     if min(timeouts.overall, timeouts.connect, timeouts.phase, timeouts.confirmation) <= 0:
         raise ProvisioningError("timeouts must be positive")
-    if timeouts.scan < 0 or not 1 <= timeouts.connection_attempts <= 3:
+    if (timeouts.scan < 0 or timeouts.connection_backoff < 0
+            or type(timeouts.connection_attempts) is not int
+            or not 1 <= timeouts.connection_attempts <= 3):
         raise ProvisioningError("invalid scan timeout or connection budget")
 
 
@@ -175,23 +191,24 @@ class _Sequence:
             try:
                 await self.wait(client.connect(), self.timeouts.connect)
                 return client
-            except asyncio.CancelledError:
-                raise
             except BaseException as error:
                 last = error
-                try:
-                    await client.disconnect()
-                except BaseException:
-                    pass
+                await self.disconnect(client, error)
+                if isinstance(error, asyncio.CancelledError):
+                    raise
                 if self.connections < self.timeouts.connection_attempts:
                     await self.wait(asyncio.sleep(self.timeouts.connection_backoff), self.timeouts.connect)
         raise ProvisioningError("BLE connection budget exhausted", self.phase) from last
 
     async def disconnect(self, client: Any, original: Optional[BaseException] = None) -> None:
+        remaining = max(0.001, self.deadline - time.monotonic())
+        timeout = min(self.timeouts.phase, remaining)
         try:
-            if getattr(client, "is_connected", True):
-                await asyncio.wait_for(client.disconnect(), self.timeouts.phase)
+            task = asyncio.create_task(client.disconnect())
+            await asyncio.wait_for(asyncio.shield(task), timeout)
         except BaseException:
+            if 'task' in locals() and not task.done():
+                task.cancel()
             if original is None:
                 raise
 
@@ -229,9 +246,9 @@ class _Sequence:
             else:
                 buffer.extend(packet[2:])
 
-        await self.wait(client.start_notify(characteristic, notified))
         original = None
         try:
+            await self.wait(client.start_notify(characteristic, notified))
             if request is None:
                 await self.wait(client.read_gatt_char(characteristic))
             else:
@@ -242,8 +259,12 @@ class _Sequence:
             raise
         finally:
             active = False
+            if not future.done():
+                future.cancel()
             try:
-                await asyncio.wait_for(client.stop_notify(characteristic), self.timeouts.phase)
+                # Stop even when start_notify was cancelled: a backend may have
+                # installed the subscription before its awaitable completed.
+                await self.stop_notify(client, characteristic)
             except BaseException:
                 if not future.done():
                     future.cancel()
@@ -252,27 +273,57 @@ class _Sequence:
 
     async def ack(self, client: Any, suffix: str, value: dict[str, Any], mtu: int) -> None:
         status = (await self.response(client, suffix, value, mtu)).get("s")
-        if not isinstance(status, int) or isinstance(status, bool) or status != 1:
+        if type(status) is not int or status not in (0, 1):
+            raise InvalidResponseError("acknowledgement status must be integer zero or one", self.phase)
+        if status == 0:
             error = WifiRejectedError if suffix == "09" else ProvisioningError
             raise error("door rejected provisioning value", self.phase)
 
     async def status(self, client: Any) -> bool:
         self.phase = "wifi_status"
-        return (await self.response(client, "06")).get("w") == "PROFILE_CONNECTED_GOOD"
+        deadline = min(self.deadline, time.monotonic() + self.timeouts.phase)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProvisioningTimeoutError("Wi-Fi status deadline exhausted", self.phase)
+            status = (await self.wait(self.response(client, "06"), remaining)).get("w")
+            if not isinstance(status, str):
+                raise InvalidResponseError("Wi-Fi status must be a string", self.phase)
+            if status == "PROFILE_CONNECTED_GOOD":
+                return True
+            if status not in ("UNKNOWN", "UNPROVISIONED"):
+                raise WifiConnectionError("Wi-Fi reported a failed state", self.phase)
+            delay = min(2.0, max(.001, self.timeouts.phase / 10),
+                        max(0, deadline - time.monotonic()))
+            if delay:
+                await asyncio.sleep(delay)
+
+    async def stop_notify(self, client: Any, characteristic: Any) -> None:
+        remaining = max(0.001, self.deadline - time.monotonic())
+        task = asyncio.create_task(client.stop_notify(characteristic))
+        try:
+            await asyncio.wait_for(asyncio.shield(task), min(self.timeouts.phase, remaining))
+        except BaseException:
+            if not task.done():
+                task.cancel()
+            raise
 
     async def confirmation(self) -> bool:
         if self.confirm is None:
             return False
         self.phase = "server_confirmation"
         try:
-            return bool(await self.wait(self.confirm(), self.timeouts.confirmation))
+            return await self.wait(self.confirm(), self.timeouts.confirmation) is True
         except ProvisioningTimeoutError:
             return False
 
     async def full(self, client: Any) -> None:
         _, rsa, PKCS1v15, load_pem_public_key = _imports()
         self.phase = "mtu"
-        raw_mtu = await self.wait(client.read_gatt_char(self.characteristic(client, "03")))
+        mtu_characteristic = client.services.get_characteristic(MTU_UUID)
+        if mtu_characteristic is None:
+            raise ProvisioningError("required BLE MTU characteristic is missing", self.phase)
+        raw_mtu = await self.wait(client.read_gatt_char(mtu_characteristic))
         try:
             mtu = min(int(bytes(raw_mtu)), APPLICATION_MTU)
         except (TypeError, ValueError) as error:
@@ -320,9 +371,10 @@ class _Sequence:
             else:
                 buffer.extend(packet[2:])
 
-        await self.wait(client.start_notify(characteristic, scanned))
         original = None
+        sleeper = None
         try:
+            await self.wait(client.start_notify(characteristic, scanned))
             await self.write(client, "01", {"h": 15, "t": 5}, mtu)
             sleeper = asyncio.create_task(asyncio.sleep(self.timeouts.scan))
             done, _ = await self.wait(asyncio.wait((sleeper, scan_error),
@@ -337,8 +389,14 @@ class _Sequence:
             raise
         finally:
             active = False
+            if sleeper is not None and not sleeper.done():
+                sleeper.cancel()
+                await asyncio.gather(sleeper, return_exceptions=True)
+            if not scan_error.done():
+                scan_error.cancel()
+            await asyncio.gather(scan_error, return_exceptions=True)
             try:
-                await asyncio.wait_for(client.stop_notify(characteristic), self.timeouts.phase)
+                await self.stop_notify(client, characteristic)
             except BaseException:
                 if original is None:
                     raise
@@ -402,6 +460,8 @@ class _Sequence:
 
         if await self.confirmation():
             return ProvisioningResult(ProvisioningState.COMPLETE, "server_confirmed", wifi_retried)
+        if self.confirm is None:
+            return ProvisioningResult(ProvisioningState.PENDING, "finish_uncertain", wifi_retried)
         client, original = await self.connect(), None
         recovery_uncertain = False
         try:

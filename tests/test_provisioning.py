@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import cbor2
 import pytest
@@ -7,12 +8,14 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from petsafe.provisioning import (
     PREFIX,
+    MTU_UUID,
     InvalidResponseError,
     ProvisioningError,
     ProvisioningState,
     ProvisioningTimeoutError,
     ProvisioningTimeouts,
     WifiNetwork,
+    WifiConnectionError,
     provision_smartdoor,
 )
 
@@ -26,13 +29,22 @@ FAST = ProvisioningTimeouts(overall=.5, connect=.05, phase=.05, scan=.001,
 
 
 class Services:
+    UUIDS = {MTU_UUID, *(PREFIX + suffix for suffix in
+                         ("90", "08", "10", "01", "05", "09", "06", "07"))}
+
+    def __init__(self):
+        self.requested = []
+
     def get_characteristic(self, uuid):
-        return uuid if uuid.startswith(PREFIX) else None
+        self.requested.append(uuid)
+        return uuid if uuid in self.UUIDS else None
 
 
 class FakeGatt:
     def __init__(self, *, wifi_ack=1, finish_timeout=False, malformed_key=False,
-                 connect_error=False, stall=False, status=True):
+                 connect_error=False, stall=False, statuses=None,
+                 partial_connect=False, hanging_disconnect=False,
+                 notify_stall=None):
         self.services = Services()
         self.is_connected = False
         self.callbacks = {}
@@ -42,22 +54,36 @@ class FakeGatt:
         self.malformed_key = malformed_key
         self.connect_error = connect_error
         self.stall = stall
-        self.status = status
+        self.statuses = list(statuses or ["PROFILE_CONNECTED_GOOD"])
+        self.status_reads = 0
+        self.partial_connect = partial_connect
+        self.hanging_disconnect = hanging_disconnect
+        self.notify_stall = notify_stall
         self.disconnected = False
+        self.disconnect_calls = 0
         self.finished = 0
+        self.finish_payload_frames = 0
         self.key_requests = 0
 
     async def connect(self):
         if self.connect_error:
             raise ConnectionError("synthetic connect failure")
         self.is_connected = True
+        if self.partial_connect:
+            await asyncio.Event().wait()
 
     async def disconnect(self):
+        self.disconnect_calls += 1
+        if self.hanging_disconnect:
+            await asyncio.Event().wait()
         self.is_connected = False
         self.disconnected = True
 
     async def start_notify(self, characteristic, callback):
-        self.callbacks[characteristic[-2:]] = callback
+        suffix = characteristic[-2:]
+        self.callbacks[suffix] = callback
+        if suffix == self.notify_stall:
+            await asyncio.Event().wait()
 
     async def stop_notify(self, characteristic):
         self.callbacks.pop(characteristic[-2:], None)
@@ -82,14 +108,18 @@ class FakeGatt:
         if suffix == "10":
             self.notify("10", {"n": "synthetic-firmware"})
         if suffix == "06":
-            self.notify("06", {"w": "PROFILE_CONNECTED_GOOD" if self.status else "CONNECTING"})
+            self.status_reads += 1
+            status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+            self.notify("06", {"w": status})
         return b""
 
     async def write_gatt_char(self, characteristic, frame, response=True):
         suffix = characteristic[-2:]
         if self.stall:
             await asyncio.Event().wait()
-        if suffix == "07" and self.finish_timeout:
+        if suffix == "07" and frame != b"\xff\xff":
+            self.finish_payload_frames += 1
+        if suffix == "07" and frame == b"\xff\xff" and self.finish_timeout:
             await asyncio.Event().wait()
         if frame == b"\xff\xff":
             payload = cbor2.loads(bytes(self.buffers.pop(suffix, b"")))
@@ -129,6 +159,7 @@ def test_success_requires_server_confirmation_and_uses_uuid_characteristics():
     result = run(lambda device: client, confirmed)
     assert result.state is ProvisioningState.COMPLETE
     assert client.finished == 1 and client.disconnected and client.key_requests == 1
+    assert MTU_UUID in client.services.requested
 
 
 def test_wifi_rejection_retries_once_with_fresh_connection_and_key():
@@ -152,6 +183,7 @@ def test_lost_finish_ack_accepts_delayed_fresh_server_confirmation():
     result = run(lambda device: client, confirmed)
     assert result.state is ProvisioningState.COMPLETE
     assert not result.finish_retried
+    assert client.finish_payload_frames > 0
 
 
 def test_finish_only_recovery_checks_fresh_status_first():
@@ -166,6 +198,22 @@ def test_finish_only_recovery_checks_fresh_status_first():
     assert not clients
 
 
+def test_status_polls_protocol_pending_state_until_good():
+    client = FakeGatt(statuses=["UNKNOWN", "UNPROVISIONED", "PROFILE_CONNECTED_GOOD"])
+
+    async def confirmed():
+        return True
+
+    assert run(lambda device: client, confirmed).state is ProvisioningState.COMPLETE
+    assert client.status_reads == 3
+
+
+def test_status_rejects_protocol_failure_and_malformed_value():
+    for status, error in (("WRONG_PASSWORD", WifiConnectionError), (7, InvalidResponseError)):
+        with pytest.raises(error):
+            run(lambda device, status=status: FakeGatt(statuses=[status]))
+
+
 def test_fragment_validation_and_input_validation():
     with pytest.raises(InvalidResponseError):
         run(lambda device: FakeGatt(malformed_key=True))
@@ -176,6 +224,20 @@ def test_fragment_validation_and_input_validation():
         asyncio.run(provision_smartdoor(object(), ENDPOINT,
                                         WifiNetwork("x", "long-enough", b"123456", 1, 0),
                                         client_factory=FakeGatt))
+    for value in (float("nan"), float("inf"), -1):
+        invalid = ProvisioningTimeouts(connection_backoff=value)
+        with pytest.raises(ProvisioningError):
+            asyncio.run(provision_smartdoor(object(), ENDPOINT, NETWORK,
+                                            client_factory=FakeGatt, timeouts=invalid))
+    assert "synthetic-password" not in repr(NETWORK)
+
+
+@pytest.mark.parametrize("status", (None, True, 2, "0"))
+def test_malformed_wifi_ack_is_not_retried(status):
+    clients = [FakeGatt(wifi_ack=status), FakeGatt()]
+    with pytest.raises(InvalidResponseError):
+        run(lambda device: clients.pop(0))
+    assert len(clients) == 1
 
 
 def test_stale_reply_cannot_satisfy_new_attempt_and_disconnect_is_bounded():
@@ -223,7 +285,63 @@ def test_cancellation_cleans_up_and_deadline_exhaustion_is_finite():
         run(lambda device: FakeGatt(stall=True), timeouts=tiny)
 
 
+def test_partial_connect_cancellation_attempts_bounded_disconnect():
+    async def check(hanging_disconnect):
+        client = FakeGatt(partial_connect=True, hanging_disconnect=hanging_disconnect)
+        task = asyncio.create_task(provision_smartdoor(
+            object(), ENDPOINT, NETWORK, client_factory=lambda device: client, timeouts=FAST))
+        await asyncio.sleep(.005)
+        started = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, .15)
+        assert client.disconnect_calls == 1
+        assert time.monotonic() - started < .15
+
+    asyncio.run(check(False))
+    asyncio.run(check(True))
+
+
+def test_notification_and_scan_cancellation_clean_owned_state():
+    async def cancel_when(client, ready, timeouts=FAST):
+        task = asyncio.create_task(provision_smartdoor(
+            object(), ENDPOINT, NETWORK, client_factory=lambda device: client,
+            timeouts=timeouts))
+        for _ in range(100):
+            if ready(client):
+                break
+            await asyncio.sleep(.001)
+        else:
+            raise AssertionError("fake did not reach cancellation point")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, .15)
+        assert not client.callbacks and client.disconnect_calls == 1
+
+    partial = FakeGatt(notify_stall="08")
+    asyncio.run(cancel_when(partial, lambda client: "08" in client.callbacks))
+    scanning = FakeGatt()
+    slow_scan = ProvisioningTimeouts(overall=.5, connect=.05, phase=.25, scan=.2,
+                                     confirmation=.05, connection_backoff=0)
+    asyncio.run(cancel_when(scanning, lambda client: "01" in client.callbacks, slow_scan))
+
+
 def test_acknowledged_finish_without_confirmation_is_pending():
     result = run(lambda device: FakeGatt())
     assert result.state is ProvisioningState.PENDING
     assert result.phase == "server_confirmation"
+
+
+def test_uncertain_finish_without_confirmation_does_not_reconnect_or_replay():
+    clients = [FakeGatt(finish_timeout=True)]
+    result = run(lambda device: clients.pop(0))
+    assert result.state is ProvisioningState.PENDING
+    assert result.phase == "finish_uncertain" and not result.finish_retried
+    assert not clients
+
+
+def test_confirmation_requires_literal_true():
+    async def truthy_but_not_confirmation():
+        return {"connected": True}
+
+    assert run(lambda device: FakeGatt(), truthy_but_not_confirmation).state is ProvisioningState.PENDING
