@@ -249,3 +249,26 @@ def test_request_inputs_are_validated_before_network_use():
         with pytest.raises(ValueError) as raised:
             SetupClient(BASE, token)
         assert not token or token not in str(raised.value)
+
+
+def test_confirmation_waits_through_observer_outage_but_rejects_bad_auth():
+    outcomes = iter((503, "timeout", 200, 401))
+
+    async def handler(request):
+        result = next(outcomes)
+        if result == "timeout":
+            raise httpx.ReadTimeout("synthetic timeout", request=request)
+        return httpx.Response(result, json=payload(
+            state="complete", provisioned=True, online=True, reported=True))
+
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            confirm = SetupClient(BASE, TOKEN, client=http).confirmation(session())
+            assert await confirm() is False
+            assert await confirm() is False
+            assert await confirm() is True
+            with pytest.raises(SetupAPIError) as raised:
+                await confirm()
+            assert raised.value.status_code == 401
+
+    run(check())

@@ -194,7 +194,14 @@ class SetupClient:
             raise TypeError("session must be a SetupSession")
 
         async def confirmed() -> bool:
-            return (await self.status(session)).confirmed
+            try:
+                return (await self.status(session)).confirmed
+            except SetupAPIError as error:
+                if error.status_code != 503:
+                    raise
+                return False
+            except httpx.TimeoutException:
+                return False
 
         return confirmed
 
