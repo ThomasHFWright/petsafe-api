@@ -15,6 +15,7 @@ setuptools.setup(
     url="https://github.com/ThomasHFWright/petsafe-api",
     packages=setuptools.find_packages(),
     install_requires=["httpx", "botocore"],
+    extras_require={"ble": ["bleak", "cbor2", "cryptography"]},
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
