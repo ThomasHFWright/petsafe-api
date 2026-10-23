@@ -25,7 +25,7 @@ PUBLIC_KEY = KEY.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPub
 ENDPOINT = "https://setup.example.test/provision/session"
 NETWORK = WifiNetwork("Test Network", "synthetic-password", b"\x10\x20\x30\x40\x50\x60")
 FAST = ProvisioningTimeouts(overall=.5, connect=.05, phase=.05, scan=.001,
-                            confirmation=.05, connection_backoff=0)
+                            confirmation=.05, connection_backoff=0, notification_settle=0)
 
 
 class Services:
@@ -126,6 +126,7 @@ class FakeGatt:
         if self.stall:
             await asyncio.Event().wait()
         if suffix == "07" and frame != b"\xff\xff":
+            assert "07" in self.callbacks, "finish must retain the app's notification subscription"
             self.finish_payload_frames += 1
         if suffix == "07" and frame == b"\xff\xff" and self.finish_timeout:
             await asyncio.Event().wait()
@@ -311,7 +312,7 @@ def test_cancellation_cleans_up_and_deadline_exhaustion_is_finite():
 
     asyncio.run(cancelled())
     tiny = ProvisioningTimeouts(overall=.01, connect=.05, phase=.05, scan=.001,
-                                confirmation=.05, connection_backoff=0)
+                                confirmation=.05, connection_backoff=0, notification_settle=0)
     with pytest.raises(ProvisioningTimeoutError):
         run(lambda device: FakeGatt(stall=True), timeouts=tiny)
 
@@ -353,7 +354,7 @@ def test_notification_and_scan_cancellation_clean_owned_state():
     asyncio.run(cancel_when(partial, lambda client: "08" in client.callbacks))
     scanning = FakeGatt()
     slow_scan = ProvisioningTimeouts(overall=.5, connect=.05, phase=.25, scan=.2,
-                                     confirmation=.05, connection_backoff=0)
+                                     confirmation=.05, connection_backoff=0, notification_settle=0)
     asyncio.run(cancel_when(scanning, lambda client: "01" in client.callbacks, slow_scan))
 
 
@@ -394,3 +395,25 @@ def test_negative_server_checks_wait_for_late_success_without_finish_replay():
     assert result.state is ProvisioningState.COMPLETE
     assert checks > 1 and not result.finish_retried
     assert client.disconnect_calls == 1
+
+
+def test_notification_readiness_delay_prevents_lost_device_key():
+    from dataclasses import replace
+    client = FakeGatt()
+    ready = {}
+    subscribe = client.start_notify
+    notify = client.notify
+
+    async def delayed_ready(characteristic, callback):
+        await subscribe(characteristic, callback)
+        ready[characteristic[-2:]] = time.monotonic() + .005
+
+    def notify_when_ready(suffix, value, fragmented=True):
+        if time.monotonic() >= ready[suffix]:
+            notify(suffix, value, fragmented)
+
+    client.start_notify = delayed_ready
+    client.notify = notify_when_ready
+    result = run(lambda device: client, timeouts=replace(FAST, notification_settle=.01))
+    assert result.state is ProvisioningState.PENDING and client.finished == 1
+    assert not client.callbacks and client.disconnected

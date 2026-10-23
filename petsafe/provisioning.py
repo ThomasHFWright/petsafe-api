@@ -63,6 +63,7 @@ class ProvisioningTimeouts:
     confirmation: float = 120.0
     connection_attempts: int = 3
     connection_backoff: float = 0.25
+    notification_settle: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -144,13 +145,13 @@ def _validate(endpoint: str, network: WifiNetwork, timeouts: ProvisioningTimeout
     if network.security != SUPPORTED_SECURITY:
         raise ProvisioningError("unsupported Wi-Fi security")
     numbers = (timeouts.overall, timeouts.connect, timeouts.phase, timeouts.scan,
-               timeouts.confirmation, timeouts.connection_backoff)
+               timeouts.confirmation, timeouts.connection_backoff, timeouts.notification_settle)
     if any(not isinstance(value, (int, float)) or isinstance(value, bool)
            or not math.isfinite(value) for value in numbers):
         raise ProvisioningError("timeouts must be finite numbers")
     if min(timeouts.overall, timeouts.connect, timeouts.phase, timeouts.confirmation) <= 0:
         raise ProvisioningError("timeouts must be positive")
-    if (timeouts.scan < 0 or timeouts.connection_backoff < 0
+    if (timeouts.scan < 0 or timeouts.connection_backoff < 0 or timeouts.notification_settle < 0
             or type(timeouts.connection_attempts) is not int
             or not 1 <= timeouts.connection_attempts <= 3):
         raise ProvisioningError("invalid scan timeout or connection budget")
@@ -226,6 +227,12 @@ class _Sequence:
         for frame in _frames(cbor2.dumps(value, canonical=True), mtu):
             await self.wait(client.write_gatt_char(characteristic, frame, response=True))
 
+    async def start_notify(self, client: Any, characteristic: Any, callback: Any) -> None:
+        await self.wait(client.start_notify(characteristic, callback))
+        # v2.1.12 can acknowledge CCCD before it is ready to send a response.
+        # 100ms allowed the Apollo/Bleak key exchange to complete on hardware.
+        await self.wait(asyncio.sleep(self.timeouts.notification_settle))
+
     async def response(self, client: Any, suffix: str,
                        request: Optional[dict[str, Any]] = None,
                        mtu: int = APPLICATION_MTU) -> dict[str, Any]:
@@ -254,7 +261,7 @@ class _Sequence:
 
         original = None
         try:
-            await self.wait(client.start_notify(characteristic, notified))
+            await self.start_notify(client, characteristic, notified)
             if request is None:
                 await self.wait(client.read_gatt_char(characteristic))
             else:
@@ -392,7 +399,7 @@ class _Sequence:
         original = None
         sleeper = None
         try:
-            await self.wait(client.start_notify(characteristic, scanned))
+            await self.start_notify(client, characteristic, scanned)
             await self.write(client, "01", {"h": 15, "t": 5}, mtu)
             sleeper = asyncio.create_task(asyncio.sleep(self.timeouts.scan))
             done, _ = await self.wait(asyncio.wait((sleeper, scan_error),
@@ -444,7 +451,22 @@ class _Sequence:
 
     async def finish(self, client: Any) -> None:
         self.phase = "finish"
-        await self.write(client, "07", {"o": True, "c": 1}, APPLICATION_MTU)
+        characteristic = self.characteristic(client, "07")
+        original = None
+        try:
+            # Match the app/native recovery subscription; server evidence, not
+            # an optional finish notification, determines provisioning success.
+            await self.start_notify(client, characteristic, lambda *_: None)
+            await self.write(client, "07", {"o": True, "c": 1}, APPLICATION_MTU)
+        except BaseException as error:
+            original = error
+            raise
+        finally:
+            try:
+                await self.stop_notify(client, characteristic)
+            except BaseException:
+                if original is None:
+                    raise
 
     async def run(self) -> ProvisioningResult:
         wifi_retried = False
