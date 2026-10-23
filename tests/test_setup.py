@@ -9,7 +9,7 @@ from petsafe.setup import InvalidSetupResponse, SetupAPIError, SetupClient, Setu
 
 BASE = "https://setup.example.test"
 TOKEN = "synthetic-token"
-DEVICE = "12345678-1234-5678-9234-abcdef123456"
+DEVICE = "001122AABBCC"
 SESSION = "87654321-4321-6789-a234-678943216789"
 
 
@@ -145,8 +145,9 @@ def test_redirect_is_not_followed_or_accepted():
 @pytest.mark.parametrize("change", [
     {"unexpected": True},
     {"session_id": "not-a-uuid"},
-    {"device_id": DEVICE.upper()},
+    {"device_id": DEVICE.lower()},
     {"endpoint": f"https://attacker.test/provision/{SESSION}"},
+    {"endpoint": f"https://setup.example.test:8443/provision/{SESSION}"},
     {"endpoint": f"{BASE}/provision/{DEVICE}"},
     {"expires_at": -1},
     {"expires_at": True},
@@ -184,7 +185,7 @@ def test_response_media_json_and_size_are_bounded(response):
 
 @pytest.mark.parametrize("change", [
     {"session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
-    {"device_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+    {"device_id": "FFEEDDCCBBAA"},
     {"mode": "reconnect"},
 ])
 def test_status_rejects_stale_or_cross_session_identity(change):
@@ -228,7 +229,7 @@ def test_cancel_and_owned_client_lifecycle():
 @pytest.mark.parametrize("base", [
     "http://setup.example.test", "https://user@setup.example.test",
     "https://setup.example.test/path", "https://setup.example.test?",
-    "https://setup.example.test#fragment",
+    "https://setup.example.test#fragment", "https://setup.example.test:8443",
 ])
 def test_base_must_be_an_https_origin(base):
     with pytest.raises(ValueError):
@@ -238,7 +239,9 @@ def test_base_must_be_an_https_origin(base):
 def test_request_inputs_are_validated_before_network_use():
     client = SetupClient(BASE, TOKEN)
     with pytest.raises(ValueError):
-        run(client.create(DEVICE.upper(), "provision"))
+        run(client.create(DEVICE.lower(), "provision"))
+    with pytest.raises(ValueError):
+        run(client.status(session(device_id=DEVICE.lower())))
     with pytest.raises(ValueError):
         run(client.create(DEVICE, "other"))
     run(client.aclose())

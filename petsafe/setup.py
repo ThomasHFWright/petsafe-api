@@ -12,6 +12,7 @@ import httpx
 
 MAX_RESPONSE_BYTES = 16 * 1024
 _TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=*\Z")
+_DEVICE_ID = re.compile(r"[0-9A-F]{12}\Z")
 _FIELDS = {
     "session_id", "device_id", "mode", "endpoint", "expires_at", "state",
     "provisioned", "online", "reported",
@@ -64,6 +65,12 @@ def _canonical_uuid(value: Any, name: str) -> str:
     return value
 
 
+def _canonical_device_id(value: Any) -> str:
+    if type(value) is not str or not _DEVICE_ID.fullmatch(value):
+        raise ValueError("device_id must be 12 uppercase hexadecimal characters")
+    return value
+
+
 def _url(value: Any, *, origin_only: bool = False) -> tuple[httpx.URL, tuple[str, str, int]]:
     if type(value) is not str or len(value) > 2048 or "?" in value or "#" in value:
         raise ValueError("URL must be HTTPS without credentials, query, or fragment")
@@ -72,8 +79,9 @@ def _url(value: Any, *, origin_only: bool = False) -> tuple[httpx.URL, tuple[str
     except (TypeError, httpx.InvalidURL) as error:
         raise ValueError("URL must be HTTPS without credentials, query, or fragment") from error
     if (url.scheme != "https" or not url.host or url.userinfo or url.query or url.fragment
+            or url.port not in (None, 443)
             or (origin_only and url.path != "/")):
-        raise ValueError("URL must be HTTPS without credentials, query, or fragment")
+        raise ValueError("URL must be HTTPS on port 443 without credentials, query, or fragment")
     return url, (url.scheme, url.host, url.port or 443)
 
 
@@ -142,7 +150,7 @@ class SetupClient:
             raise InvalidSetupResponse("setup API response has an invalid shape")
         try:
             returned_session = _canonical_uuid(value["session_id"], "session_id")
-            returned_device = _canonical_uuid(value["device_id"], "device_id")
+            returned_device = _canonical_device_id(value["device_id"])
             endpoint, endpoint_origin = _url(value["endpoint"])
         except ValueError as error:
             raise InvalidSetupResponse("setup API response has an invalid identity") from error
@@ -162,7 +170,7 @@ class SetupClient:
                             value["online"], value["reported"])
 
     async def create(self, device_id: str, mode: str) -> SetupSession:
-        device_id = _canonical_uuid(device_id, "device_id")
+        device_id = _canonical_device_id(device_id)
         if mode not in ("provision", "reconnect"):
             raise ValueError("mode must be 'provision' or 'reconnect'")
         body = await self._request("POST", "/setup/sessions", 201,
@@ -173,7 +181,7 @@ class SetupClient:
         if not isinstance(session, SetupSession):
             raise TypeError("session must be a SetupSession")
         session_id = _canonical_uuid(session.session_id, "session_id")
-        device_id = _canonical_uuid(session.device_id, "device_id")
+        device_id = _canonical_device_id(session.device_id)
         if session.mode not in ("provision", "reconnect"):
             raise ValueError("session mode is invalid")
         body = await self._request("GET", f"/setup/sessions/{session_id}", 200)
