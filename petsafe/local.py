@@ -75,8 +75,11 @@ class LocalPetSafeClient:
                 body.extend(chunk)
                 if len(body) > MAX_RESPONSE_BYTES:
                     raise httpx.HTTPError("local API response is too large")
+            headers = response.headers.copy()
+            headers.pop("content-encoding", None)
+            headers.pop("content-length", None)
             return httpx.Response(
-                response.status_code, headers=response.headers, content=bytes(body),
+                response.status_code, headers=headers, content=bytes(body),
                 request=request, extensions=response.extensions,
             )
         finally:
@@ -97,7 +100,10 @@ class LocalPetSafeClient:
     async def get_smartdoors(self) -> list[DeviceSmartDoor]:
         response = await self.api_get("smartdoor/product/product")
         payload = json.loads(response.content.decode("UTF-8"))
-        doors = [DeviceSmartDoor(self, data) for data in payload.get("data", payload)]
+        devices = payload.get("data", payload) if isinstance(payload, dict) else payload
+        if not isinstance(devices, list) or any(not isinstance(data, dict) for data in devices):
+            raise ValueError("Unexpected response payload for SmartDoor devices")
+        doors = [DeviceSmartDoor(self, data) for data in devices]
         preferences = await asyncio.gather(*(door.get_preferences() for door in doors))
         for door, prefs in zip(doors, preferences):
             for name in ("friendlyName", "tz"):

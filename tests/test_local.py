@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import json
 
 import httpx
@@ -131,3 +132,37 @@ def test_non_default_https_port_is_part_of_the_origin():
     client = petsafe.LocalPetSafeClient("https://local.example.test:8443", TOKEN)
     assert client._request_url("pets/pets") == "https://local.example.test:8443/local/pets/pets"
     run(client.aclose())
+
+
+def test_compressed_response_is_returned_once_decoded():
+    body = b'{"data":[]}'
+
+    async def check():
+        response = httpx.Response(
+            200,
+            headers={"content-encoding": "gzip", "content-length": "999"},
+            content=gzip.compress(body),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: response),
+        ) as http:
+            returned = await petsafe.LocalPetSafeClient(BASE, TOKEN, client=http).api_get(
+                "smartdoor/product/product"
+            )
+            assert returned.content == body
+            assert "content-encoding" not in returned.headers
+            assert returned.headers["content-length"] == str(len(body))
+
+    run(check())
+
+
+@pytest.mark.parametrize("payload", [{"data": {}}, {"data": ["not-a-device"]}, 1])
+def test_smartdoor_collection_shape_is_validated(payload):
+    async def check():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)),
+        ) as http:
+            with pytest.raises(ValueError, match="SmartDoor devices"):
+                await petsafe.LocalPetSafeClient(BASE, TOKEN, client=http).get_smartdoors()
+
+    run(check())
