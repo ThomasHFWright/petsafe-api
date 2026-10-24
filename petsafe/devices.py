@@ -705,6 +705,21 @@ class DeviceSmartDoor:
             self.data["schedules"] = schedules
         return schedules
 
+    async def get_schedule(self, schedule_id: str) -> dict:
+        """Return one SmartDoor schedule by identifier."""
+
+        if not schedule_id:
+            raise ValueError("schedule_id must be provided")
+        response = await self.client.api_get(
+            f"smartdoor/product/schedules/{self.api_name}/{schedule_id}"
+        )
+        response.raise_for_status()
+        payload = json.loads(response.content.decode("UTF-8"))
+        data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected response payload for SmartDoor schedule")
+        return data
+
     async def get_override_schedules(self) -> list[dict]:
         """Return override schedules configured for the SmartDoor."""
 
@@ -736,6 +751,15 @@ class DeviceSmartDoor:
             await self.update_data()
         return data
 
+    async def clear_override_schedule(self, *, update_data: bool = True) -> None:
+        """Clear the SmartDoor's temporary access override."""
+
+        await self.client.api_delete(
+            f"smartdoor/product/override/schedules/{self.api_name}"
+        )
+        if update_data:
+            await self.update_data()
+
     async def save_schedule(
         self, schedule: dict, *, update_data: bool = True
     ) -> dict:
@@ -746,6 +770,25 @@ class DeviceSmartDoor:
         payload = dict(schedule)
         payload.setdefault("thingName", self.api_name)
         response = await self.client.api_post(
+            "smartdoor/product/schedules", data=payload
+        )
+        response.raise_for_status()
+        response_payload = json.loads(response.content.decode("UTF-8"))
+        data = response_payload.get("data", response_payload)
+        if update_data:
+            await self.update_data()
+        return data
+
+    async def update_schedule(
+        self, schedule: dict, *, update_data: bool = True
+    ) -> dict:
+        """Update an existing SmartDoor schedule."""
+
+        if not isinstance(schedule, dict) or not schedule.get("scheduleId"):
+            raise ValueError("schedule with scheduleId must be provided")
+        payload = dict(schedule)
+        payload.setdefault("thingName", self.api_name)
+        response = await self.client.api_put(
             "smartdoor/product/schedules", data=payload
         )
         response.raise_for_status()

@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from typing import Any, Optional
-from urllib.parse import unquote, urlsplit
+from typing import Any, AsyncIterator, Optional
+from urllib.parse import quote, quote_plus, unquote, urlsplit
 
 import httpx
 
@@ -63,7 +63,7 @@ class LocalPetSafeClient:
             raise ValueError("path must remain on the configured server")
         return str(url)
 
-    async def _request(self, method: str, path: str, data: Optional[dict] = None) -> httpx.Response:
+    async def _request(self, method: str, path: str, data: Any = None) -> httpx.Response:
         request = self._client.build_request(
             method, self._request_url(path),
             headers={"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"},
@@ -96,10 +96,13 @@ class LocalPetSafeClient:
     async def api_post(self, path: str = "", data: Optional[dict] = None) -> httpx.Response:
         return await self._request("POST", path, data)
 
+    async def api_put(self, path: str = "", data: Any = None) -> httpx.Response:
+        return await self._request("PUT", path, data)
+
     async def api_delete(self, path: str = "") -> httpx.Response:
         return await self._request("DELETE", path)
 
-    async def iter_events(self):
+    async def iter_events(self) -> AsyncIterator[dict]:
         """Yield validated full snapshots from the local server's SSE stream."""
         request = self._client.build_request(
             "GET", self._request_url("events"),
@@ -158,13 +161,19 @@ class LocalPetSafeClient:
                 ValueError("Invalid JSON number")))
         except (TypeError, ValueError, RecursionError) as error:
             raise ValueError("Invalid snapshot JSON") from error
-        keys = {"version", "revision", "brokerConnected", "door", "pets",
-                "links", "activity", "override"}
+        return cls._validate_snapshot(payload)
+
+    @classmethod
+    def _validate_snapshot(cls, payload: Any) -> dict:
+        required = {"version", "revision", "brokerConnected", "door", "pets",
+                    "links", "activity", "override"}
+        optional = {"rfidScan", "setupSession", "account", "notifications", "capabilities"}
         try:
             finite = cls._finite(payload)
         except RecursionError as error:
             raise ValueError("Invalid snapshot schema") from error
-        if (not isinstance(payload, dict) or set(payload) != keys
+        if (not isinstance(payload, dict) or not required <= set(payload)
+                or set(payload) - required - optional
                 or type(payload["version"]) is not int or payload["version"] != 1
                 or type(payload["revision"]) is not int
                 or payload["revision"] < 0
@@ -179,6 +188,12 @@ class LocalPetSafeClient:
                 or not isinstance(payload["activity"], list)
                 or any(not isinstance(item, dict) for item in payload["activity"])
                 or payload["override"] is not None and not isinstance(payload["override"], dict)
+                or "rfidScan" in payload and payload["rfidScan"] is not None
+                    and not isinstance(payload["rfidScan"], dict)
+                or "setupSession" in payload and payload["setupSession"] is not None
+                    and not isinstance(payload["setupSession"], dict)
+                or any(key in payload and not isinstance(payload[key], dict)
+                       for key in ("account", "notifications", "capabilities"))
                 or not finite):
             raise ValueError("Invalid snapshot schema")
         return payload
@@ -213,3 +228,226 @@ class LocalPetSafeClient:
 
     async def get_litterboxes(self) -> list:
         return []
+
+    @staticmethod
+    def _data(response: httpx.Response) -> Any:
+        try:
+            payload = json.loads(response.content.decode("UTF-8"))
+        except (UnicodeError, ValueError, RecursionError) as error:
+            raise ValueError("Invalid local API JSON") from error
+        return payload.get("data", payload) if isinstance(payload, dict) else payload
+
+    @staticmethod
+    def _segment(value: str, name: str) -> str:
+        if (type(value) is not str or not value or "/" in value or "\\" in value
+                or value in (".", "..")):
+            raise ValueError(f"{name} must be provided")
+        return quote(value, safe="")
+
+    @staticmethod
+    def _query(value: str, name: str) -> str:
+        if type(value) is not str or not value:
+            raise ValueError(f"{name} must be provided")
+        return quote_plus(value, safe="")
+
+    async def get_state(self) -> dict:
+        """Return the server's offline-readable full local snapshot."""
+        return self._validate_snapshot(self._data(await self.api_get("state")))
+
+    async def get_product_summaries(self) -> list[dict]:
+        """Return local SmartDoor directory summaries."""
+        data = self._data(await self.api_get("directory/products"))
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("Unexpected local product summaries response")
+        return data
+
+    async def list_pets(self) -> list[dict]:
+        """Return active local pet profiles."""
+        data = self._data(await self.api_get("pets/pets"))
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("Unexpected local pets response")
+        return data
+
+    async def create_pet(self, pet: dict) -> dict:
+        """Create a local pet from the server's profile/timezone request object."""
+        if not isinstance(pet, dict):
+            raise TypeError("pet must be a dict")
+        data = self._data(await self.api_post("pets/pets", pet))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local pet response")
+        return data
+
+    async def update_pet(self, pet_id: str, changes: dict) -> dict:
+        """Update a local pet profile and return the updated pet."""
+        if not isinstance(changes, dict):
+            raise TypeError("changes must be a dict")
+        data = self._data(await self.api_patch(
+            "pets/pets/" + self._segment(pet_id, "pet_id"), changes))
+        if isinstance(data, list) and len(data) == 1:
+            data = data[0]
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local pet response")
+        return data
+
+    async def delete_pet(self, pet_id: str) -> Any:
+        """Delete a local pet and its door access."""
+        return self._data(await self.api_delete(
+            "pets/pets/" + self._segment(pet_id, "pet_id")))
+
+    async def set_pet_identifier(self, pet_id: str, thing_name: str,
+                                 tag_id: str, technology: str) -> dict:
+        """Assign or replace one SmartDoor RFID technology for a pet."""
+        path = "pets/pets/{}/{}/identifier".format(
+            self._segment(pet_id, "pet_id"), self._segment(thing_name, "thing_name"))
+        data = self._data(await self.api_put(
+            path, {"tagId": tag_id, "technology": technology}))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local identifier response")
+        return data
+
+    async def delete_pet_identifiers(self, pet_id: str, thing_name: str) -> Any:
+        """Remove all SmartDoor identifiers for a pet."""
+        path = "pets/pets/{}/{}/identifier".format(
+            self._segment(pet_id, "pet_id"), self._segment(thing_name, "thing_name"))
+        return self._data(await self.api_delete(path))
+
+    async def get_pet_links(self, pet_id: str) -> list[dict]:
+        """Return active product links for one pet."""
+        data = self._data(await self.api_get(
+            "directory/petProduct?petId=" + self._query(pet_id, "pet_id")))
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("Unexpected local pet links response")
+        return data
+
+    async def get_door_links(self, thing_name: str) -> list[dict]:
+        """Return active pet links for one SmartDoor."""
+        data = self._data(await self.api_get(
+            "directory/petProduct?productId="
+            + self._query(thing_name, "thing_name")))
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("Unexpected local door links response")
+        return data
+
+    async def link_pet(self, pet_id: str, thing_name: str, product_type: str) -> list[dict]:
+        """Grant a pet use of one local SmartDoor."""
+        link = {"petId": pet_id, "productId": thing_name,
+                "productType": product_type, "relationType": "use"}
+        return await self.link_pets([link])
+
+    async def link_pets(self, links: list[dict]) -> list[dict]:
+        """Atomically add or revive local pet-product links."""
+        if not isinstance(links, list) or any(not isinstance(item, dict) for item in links):
+            raise TypeError("links must be a list of dicts")
+        data = self._data(await self.api_put("directory/petProduct", links))
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise ValueError("Unexpected local pet links response")
+        return data
+
+    async def unlink_pet(self, pet_id: str, thing_name: str) -> Any:
+        """Revoke a pet's access to one local SmartDoor."""
+        path = "directory/petProduct?productId={}&petId={}".format(
+            self._query(thing_name, "thing_name"), self._query(pet_id, "pet_id"))
+        return self._data(await self.api_delete(path))
+
+    async def get_account(self) -> dict:
+        """Return the local owner account-shaped record."""
+        data = self._data(await self.api_get("directory/account"))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local account response")
+        return data
+
+    async def update_account(self, changes: dict) -> dict:
+        """Update supported local account preferences."""
+        if not isinstance(changes, dict):
+            raise TypeError("changes must be a dict")
+        data = self._data(await self.api_patch("directory/account", changes))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local account response")
+        return data
+
+    async def get_notifications(self, thing_name: str) -> dict:
+        """Return persisted notification flags for one SmartDoor."""
+        data = self._data(await self.api_get(
+            "directory/product-preferences/" + self._segment(thing_name, "thing_name")))
+        preferences = data.get("productPreferences") if isinstance(data, dict) else None
+        preferences = preferences.get("preferences") if isinstance(preferences, dict) else None
+        if not isinstance(preferences, dict):
+            raise ValueError("Unexpected local notification response")
+        return preferences
+
+    async def update_notifications(self, thing_name: str, preferences: dict) -> dict:
+        """Replace persisted notification flags for one SmartDoor."""
+        if not isinstance(preferences, dict):
+            raise TypeError("preferences must be a dict")
+        data = self._data(await self.api_put(
+            "directory/product-preferences",
+            {"thingName": thing_name, "preferences": preferences}))
+        result = data.get("preferences") if isinstance(data, dict) else None
+        if not isinstance(result, dict):
+            raise ValueError("Unexpected local notification response")
+        return result
+
+    async def get_capabilities(self) -> dict:
+        """Return the local server's supported feature contract."""
+        data = self._data(await self.api_get("capabilities"))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local capabilities response")
+        return data
+
+    @staticmethod
+    def _scan_path(thing_name: str, scan_id: Optional[str] = None) -> str:
+        path = "smartdoor/product/product/{}/rfid-scans".format(
+            LocalPetSafeClient._segment(thing_name, "thing_name"))
+        return path if scan_id is None else path + "/" + LocalPetSafeClient._segment(scan_id, "scan_id")
+
+    async def start_rfid_scan(self, thing_name: str, technology: str) -> dict:
+        """Start one bounded native RFID scan."""
+        data = self._data(await self.api_post(
+            self._scan_path(thing_name), {"technology": technology}))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local RFID scan response")
+        return data
+
+    async def get_rfid_scan(self, thing_name: str,
+                            scan_id: Optional[str] = None) -> Optional[dict]:
+        """Return a current or identified managed RFID scan."""
+        data = self._data(await self.api_get(self._scan_path(thing_name, scan_id)))
+        if data is not None and not isinstance(data, dict):
+            raise ValueError("Unexpected local RFID scan response")
+        return data
+
+    async def cancel_rfid_scan(self, thing_name: str, scan_id: str) -> dict:
+        """Cancel a managed RFID scan and confirm mode restoration."""
+        data = self._data(await self.api_delete(self._scan_path(thing_name, scan_id)))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local RFID scan response")
+        return data
+
+    async def assign_rfid_scan(self, thing_name: str, scan_id: str, pet_id: str) -> dict:
+        """Assign a captured RFID candidate to a pet."""
+        data = self._data(await self.api_post(
+            self._scan_path(thing_name, scan_id) + "/assign", {"petId": pet_id}))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local RFID scan response")
+        return data
+
+    async def scan_rfid(self, thing_name: str, technology: str) -> AsyncIterator[dict]:
+        """Start a scan and yield push updates through capture and mode restoration."""
+        current = await self.start_rfid_scan(thing_name, technology)
+        yield current
+        if current.get("state") in {"captured", "assigned", "cancelled", "timed_out",
+                                     "failed", "expired"} and current.get("restored") is True:
+            return
+        async for snapshot in self.iter_events():
+            if "rfidScan" not in snapshot:
+                raise ValueError("Local server snapshots do not expose RFID scan state")
+            scan = snapshot["rfidScan"]
+            if not isinstance(scan, dict) or scan.get("id") != current.get("id"):
+                raise ValueError("Managed RFID scan is no longer available")
+            if scan == current:
+                continue
+            current = scan
+            yield current
+            if current.get("state") in {"captured", "assigned", "cancelled", "timed_out",
+                                         "failed", "expired"} and current.get("restored") is True:
+                return
