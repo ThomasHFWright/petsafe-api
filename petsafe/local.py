@@ -13,8 +13,8 @@ import httpx
 from .devices import DeviceSmartDoor
 from .setup import _TOKEN
 
-MAX_RESPONSE_BYTES = 1024 * 1024
-MAX_EVENT_BYTES = 4 * 1024 * 1024
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_EVENT_BYTES = MAX_RESPONSE_BYTES
 EMPTY_COMMANDS = {"REPORT_STATUS", "REBOOT", "RESET_FALSE_TRIGGERS",
                   "RESET_CONCURRENT_TRIGGERS", "CALIBRATE_FLAP_CENTER_POSITION",
                   "CALIBRATE_RFID_SCANNER"}
@@ -405,12 +405,12 @@ class LocalPetSafeClient:
                     "submittedAt", "deadline"}
         if (not isinstance(data, dict) or not required <= set(data)
                 or any(not isinstance(data[key], str) or not data[key]
-                       for key in ("id", "code", "submittedAt"))
+                       for key in ("id", "code"))
                 or data["state"] not in COMMAND_STATES
                 or type(data["confirmed"]) is not bool
                 or type(data["responseReceived"]) is not bool
-                or type(data["deadline"]) not in (int, float)
-                or not math.isfinite(data["deadline"])):
+                or any(type(data[key]) not in (int, float) or not math.isfinite(data[key])
+                       for key in ("submittedAt", "deadline"))):
             raise ValueError("Unexpected local command response")
         return data
 

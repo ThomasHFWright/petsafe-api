@@ -309,7 +309,7 @@ def test_local_management_helpers_cover_model_routes():
         command_route = "smartdoor/product/product/{}/commands".format(door_id)
         command = {"id": "command-id", "code": "REPORT_STATUS", "state": "submitted",
                    "confirmed": False, "responseReceived": False,
-                   "submittedAt": "2026-10-24T12:00:00+00:00", "deadline": 123.0}
+                   "submittedAt": 122.0, "deadline": 123.0}
         if route == command_route and request.method == "GET":
             return httpx.Response(200, json={"data": command})
         if route == command_route and request.method == "POST":
@@ -467,6 +467,15 @@ def test_native_command_payloads_fail_before_network(code, data):
 
     run(check())
     assert calls == 0
+
+
+@pytest.mark.parametrize("submitted_at", [True, "122", float("inf")])
+def test_native_command_rejects_invalid_submitted_at(submitted_at):
+    command = {"id": "command-id", "code": "REPORT_STATUS", "state": "submitted",
+               "confirmed": False, "responseReceived": False,
+               "submittedAt": submitted_at, "deadline": 123.0}
+    with pytest.raises(ValueError, match="Unexpected local command response"):
+        petsafe.LocalPetSafeClient._command(command)
 
 
 @pytest.mark.parametrize("action", [
