@@ -230,3 +230,14 @@ def test_iter_events_preserves_http_status_errors():
             assert raised.value.response.status_code == 401
 
     run(check())
+
+
+def test_iter_events_sanitizes_deep_schema_recursion():
+    nested = "[]"
+    for _ in range(500):
+        nested = "[" + nested + "]"
+    payload = ('{"version":1,"revision":0,"brokerConnected":true,'
+               '"door":{"nested":' + nested
+               + '},"pets":[],"links":{},"activity":[],"override":null}')
+    with pytest.raises(ValueError, match="snapshot schema"):
+        petsafe.LocalPetSafeClient._snapshot("snapshot", [payload])

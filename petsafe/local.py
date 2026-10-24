@@ -160,6 +160,10 @@ class LocalPetSafeClient:
             raise ValueError("Invalid snapshot JSON") from error
         keys = {"version", "revision", "brokerConnected", "door", "pets",
                 "links", "activity", "override"}
+        try:
+            finite = cls._finite(payload)
+        except RecursionError as error:
+            raise ValueError("Invalid snapshot schema") from error
         if (not isinstance(payload, dict) or set(payload) != keys
                 or type(payload["version"]) is not int or payload["version"] != 1
                 or type(payload["revision"]) is not int
@@ -175,7 +179,7 @@ class LocalPetSafeClient:
                 or not isinstance(payload["activity"], list)
                 or any(not isinstance(item, dict) for item in payload["activity"])
                 or payload["override"] is not None and not isinstance(payload["override"], dict)
-                or not cls._finite(payload)):
+                or not finite):
             raise ValueError("Invalid snapshot schema")
         return payload
 
