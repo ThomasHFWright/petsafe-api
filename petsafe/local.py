@@ -33,7 +33,7 @@ class LocalPetSafeClient:
         self._base_url = str(url).rstrip("/") + "/local/"
         self._api_token = api_token
         self._owned = client is None
-        self._client = client or httpx.AsyncClient(timeout=30, follow_redirects=False)
+        self._client = client or httpx.AsyncClient(timeout=60, follow_redirects=False)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(server_url={self._base_url[:-7]!r})"
@@ -65,7 +65,7 @@ class LocalPetSafeClient:
         request = self._client.build_request(
             method, self._request_url(path),
             headers={"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"},
-            json=data, timeout=30,
+            json=data, timeout=60,
         )
         response = await self._client.send(request, stream=True, follow_redirects=False)
         try:
