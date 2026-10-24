@@ -322,6 +322,8 @@ def test_local_management_helpers_cover_model_routes():
             return httpx.Response(201, json={"data": request_data})
         if route == firmware_route + "/jobs" and request.method == "POST":
             return httpx.Response(202, json={"data": {"id": "job-id", **request_data}})
+        if route == firmware_route + "/artifacts/" + ("ab" * 32) and request.method == "DELETE":
+            return httpx.Response(204)
         if route == firmware_route + "/jobs/job-id" and request.method == "DELETE":
             return httpx.Response(200, json={"data": {"id": "job-id", "state": "cancelled"}})
         scan_base = "smartdoor/product/product/{}/rfid-scans".format(door_id)
@@ -369,6 +371,7 @@ def test_local_management_helpers_cover_model_routes():
             staged = await client.stage_firmware(door_id, "fw-id", "1.2.3", digest)
             assert staged["sha256"] == digest.lower()
             assert (await client.install_firmware(door_id, digest))["id"] == "job-id"
+            assert await client.delete_firmware_artifact(door_id, digest) is None
             assert (await client.cancel_firmware_job(door_id, "job-id"))["state"] == "cancelled"
             assert (await client.start_rfid_scan(door_id, "MICROCHIP"))["id"] == scan_id
             assert (await client.get_rfid_scan(door_id))["state"] == "captured"
@@ -470,6 +473,7 @@ def test_native_command_payloads_fail_before_network(code, data):
     lambda client: client.stage_firmware("door-id", "fw-id", "1.0", "not-a-hash"),
     lambda client: client.stage_firmware("door-id", "", "1.0", "a" * 64),
     lambda client: client.install_firmware("door-id", "a" * 63),
+    lambda client: client.delete_firmware_artifact("door-id", "g" * 64),
     lambda client: client.cancel_firmware_job("door-id", "../job"),
 ])
 def test_firmware_inputs_fail_before_network(action):

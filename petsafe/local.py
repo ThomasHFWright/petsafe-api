@@ -484,6 +484,12 @@ class LocalPetSafeClient:
             raise ValueError("Unexpected local firmware job response")
         return data
 
+    async def delete_firmware_artifact(self, thing_name: str, sha256: str) -> None:
+        """Delete one inactive staged firmware artifact by hash."""
+        path = "smartdoor/product/product/{}/firmware/artifacts/{}".format(
+            self._segment(thing_name, "thing_name"), self._sha256(sha256))
+        await self.api_delete(path)
+
     async def cancel_firmware_job(self, thing_name: str, job_id: str) -> Any:
         """Cancel one firmware installation job."""
         path = "smartdoor/product/product/{}/firmware/jobs/{}".format(
