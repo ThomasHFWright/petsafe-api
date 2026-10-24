@@ -26,7 +26,7 @@ def test_routes_devices_pets_and_shared_client_lifecycle():
         requests.append(request)
         assert request.headers["authorization"] == f"Bearer {TOKEN}"
         assert request.extensions["timeout"] == {
-            "connect": 10, "read": 10, "write": 10, "pool": 10,
+            "connect": 30, "read": 30, "write": 30, "pool": 30,
         }
         path = request.url.path
         if path == "/local/smartdoor/product/product":
