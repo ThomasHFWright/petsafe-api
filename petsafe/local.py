@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Any, Optional
 from urllib.parse import unquote, urlsplit
 
@@ -12,6 +13,7 @@ from .devices import DeviceSmartDoor
 from .setup import _TOKEN
 
 MAX_RESPONSE_BYTES = 1024 * 1024
+MAX_EVENT_BYTES = 4 * 1024 * 1024
 
 
 class LocalPetSafeClient:
@@ -96,6 +98,97 @@ class LocalPetSafeClient:
 
     async def api_delete(self, path: str = "") -> httpx.Response:
         return await self._request("DELETE", path)
+
+    async def iter_events(self):
+        """Yield validated full snapshots from the local server's SSE stream."""
+        request = self._client.build_request(
+            "GET", self._request_url("events"),
+            headers={"Authorization": f"Bearer {self._api_token}",
+                     "Accept": "text/event-stream"},
+            timeout=httpx.Timeout(60, read=45),
+        )
+        response = await self._client.send(request, stream=True, follow_redirects=False)
+        event_type, event_data, event_bytes = None, [], 0
+        try:
+            response.raise_for_status()
+            if response.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "text/event-stream":
+                raise ValueError("Unexpected local events content type")
+            buffer = bytearray()
+            async for chunk in response.aiter_bytes():
+                buffer.extend(chunk)
+                while b"\n" in buffer:
+                    line, _, remainder = buffer.partition(b"\n")
+                    buffer = bytearray(remainder)
+                    event_bytes += len(line) + 1
+                    if event_bytes > MAX_EVENT_BYTES:
+                        raise ValueError("SSE event is too large")
+                    line = line.removesuffix(b"\r")
+                    if line:
+                        if line.startswith(b":"):
+                            continue
+                        try:
+                            field, separator, value = line.decode("UTF-8").partition(":")
+                        except UnicodeDecodeError as error:
+                            raise ValueError("Invalid UTF-8 in SSE event") from error
+                        if separator and value.startswith(" "):
+                            value = value[1:]
+                        if field == "event":
+                            event_type = value
+                        elif field == "data":
+                            event_data.append(value)
+                        continue
+                    event = self._snapshot(event_type, event_data)
+                    event_type, event_data, event_bytes = None, [], 0
+                    if event is not None:
+                        yield event
+                if event_bytes + len(buffer) > MAX_EVENT_BYTES:
+                    raise ValueError("SSE event is too large")
+            # A disconnected peer may leave a partial frame; reconnect policy belongs to the caller.
+        finally:
+            await response.aclose()
+
+    @classmethod
+    def _snapshot(cls, event_type: Optional[str], data: list[str]):
+        if event_type != "snapshot":
+            return None
+        if not data:
+            raise ValueError("Snapshot event has no data")
+        try:
+            payload = json.loads("\n".join(data), parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError("Invalid JSON number")))
+        except (TypeError, ValueError, RecursionError) as error:
+            raise ValueError("Invalid snapshot JSON") from error
+        keys = {"version", "revision", "brokerConnected", "door", "pets",
+                "links", "activity", "override"}
+        if (not isinstance(payload, dict) or set(payload) != keys
+                or type(payload["version"]) is not int or payload["version"] != 1
+                or type(payload["revision"]) is not int
+                or payload["revision"] < 0
+                or type(payload["brokerConnected"]) is not bool
+                or not isinstance(payload["door"], dict)
+                or not isinstance(payload["pets"], list)
+                or any(not isinstance(item, dict) for item in payload["pets"])
+                or not isinstance(payload["links"], dict)
+                or any(not isinstance(key, str) or not isinstance(items, list)
+                       or any(not isinstance(item, dict) for item in items)
+                       for key, items in payload["links"].items())
+                or not isinstance(payload["activity"], list)
+                or any(not isinstance(item, dict) for item in payload["activity"])
+                or payload["override"] is not None and not isinstance(payload["override"], dict)
+                or not cls._finite(payload)):
+            raise ValueError("Invalid snapshot schema")
+        return payload
+
+    @staticmethod
+    def _finite(value: Any) -> bool:
+        if isinstance(value, float):
+            return math.isfinite(value)
+        if isinstance(value, dict):
+            return all(isinstance(key, str) and LocalPetSafeClient._finite(item)
+                       for key, item in value.items())
+        if isinstance(value, list):
+            return all(LocalPetSafeClient._finite(item) for item in value)
+        return True
 
     async def get_smartdoors(self) -> list[DeviceSmartDoor]:
         response = await self.api_get("smartdoor/product/product")

@@ -24,7 +24,7 @@ Thank you to both projects for building the API integrations for existing feeder
 If installing from source code,
 `python setup.py install`
 
-## Local SmartDoor control and provisioning (3.1.0)
+## Local SmartDoor control and provisioning (3.2.0)
 
 `LocalPetSafeClient` connects to a compatible local server using its HTTPS origin
 and API token. It does not use a PetSafe vendor login, and returns the same
@@ -43,6 +43,9 @@ async def main() -> None:
         await door.lock()
         await door.unlock()
         await door.smart_mode()
+
+        async for snapshot in client.iter_events():
+            print(snapshot["revision"], snapshot["door"])
 
 
 asyncio.run(main())

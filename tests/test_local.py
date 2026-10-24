@@ -8,7 +8,7 @@ import pytest
 import petsafe
 from petsafe import pets
 from petsafe.devices import DeviceSmartDoor
-from petsafe.local import MAX_RESPONSE_BYTES
+from petsafe.local import MAX_EVENT_BYTES, MAX_RESPONSE_BYTES
 
 
 BASE = "https://local.example.test"
@@ -164,5 +164,69 @@ def test_smartdoor_collection_shape_is_validated(payload):
         ) as http:
             with pytest.raises(ValueError, match="SmartDoor devices"):
                 await petsafe.LocalPetSafeClient(BASE, TOKEN, client=http).get_smartdoors()
+
+    run(check())
+
+
+def test_iter_events_parses_snapshots_and_closes_stream():
+    snapshot = {"version": 1, "revision": 7, "brokerConnected": True,
+                "door": {"thingName": "door-test"}, "pets": [], "links": {},
+                "activity": [], "override": None}
+
+    class Stream(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            encoded = json.dumps(snapshot)
+            split = encoded.index('"door"')
+            yield (": heartbeat\n\nevent: snapshot\nid: 7\ndata: " + encoded[:split]
+                   + "\ndata: " + encoded[split:] + "\n\n").encode()
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = Stream()
+
+    async def handler(request):
+        assert request.url == BASE + "/local/events"
+        assert request.headers["authorization"] == f"Bearer {TOKEN}"
+        assert request.headers["accept"] == "text/event-stream"
+        assert request.extensions["timeout"]["read"] == 45
+        return httpx.Response(200, headers={"content-type": "text/event-stream; charset=utf-8"},
+                              stream=stream)
+
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            events = petsafe.LocalPetSafeClient(BASE, TOKEN, client=http).iter_events()
+            assert await events.__anext__() == snapshot
+            await events.aclose()
+            assert stream.closed
+
+    run(check())
+
+
+@pytest.mark.parametrize("body, message", [
+    (b"event: snapshot\ndata: {}\n\n", "schema"),
+    (b"event: snapshot\ndata: {\"version\":NaN}\n\n", "JSON"),
+    (b":" + b"x" * MAX_EVENT_BYTES + b"\n", "too large"),
+])
+def test_iter_events_rejects_invalid_or_oversized_frames(body, message):
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                               content=body))) as http:
+            with pytest.raises(ValueError, match=message):
+                await petsafe.LocalPetSafeClient(BASE, TOKEN, client=http).iter_events().__anext__()
+
+    run(check())
+
+
+def test_iter_events_preserves_http_status_errors():
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(401))) as http:
+            with pytest.raises(httpx.HTTPStatusError) as raised:
+                await petsafe.LocalPetSafeClient(BASE, TOKEN, client=http).iter_events().__anext__()
+            assert raised.value.response.status_code == 401
 
     run(check())
