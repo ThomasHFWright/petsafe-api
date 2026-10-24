@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 from typing import Any, AsyncIterator, Optional
 from urllib.parse import quote, quote_plus, unquote, urlsplit
 
@@ -14,6 +15,10 @@ from .setup import _TOKEN
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_EVENT_BYTES = 4 * 1024 * 1024
+EMPTY_COMMANDS = {"REPORT_STATUS", "REBOOT", "RESET_FALSE_TRIGGERS",
+                  "RESET_CONCURRENT_TRIGGERS", "CALIBRATE_FLAP_CENTER_POSITION",
+                  "CALIBRATE_RFID_SCANNER"}
+COMMAND_STATES = {"submitted", "response_received", "completed", "unconfirmed"}
 
 
 class LocalPetSafeClient:
@@ -167,13 +172,11 @@ class LocalPetSafeClient:
     def _validate_snapshot(cls, payload: Any) -> dict:
         required = {"version", "revision", "brokerConnected", "door", "pets",
                     "links", "activity", "override"}
-        optional = {"rfidScan", "setupSession", "account", "notifications", "capabilities"}
         try:
             finite = cls._finite(payload)
         except RecursionError as error:
             raise ValueError("Invalid snapshot schema") from error
         if (not isinstance(payload, dict) or not required <= set(payload)
-                or set(payload) - required - optional
                 or type(payload["version"]) is not int or payload["version"] != 1
                 or type(payload["revision"]) is not int
                 or payload["revision"] < 0
@@ -192,8 +195,10 @@ class LocalPetSafeClient:
                     and not isinstance(payload["rfidScan"], dict)
                 or "setupSession" in payload and payload["setupSession"] is not None
                     and not isinstance(payload["setupSession"], dict)
+                or "command" in payload and payload["command"] is not None
+                    and not isinstance(payload["command"], dict)
                 or any(key in payload and not isinstance(payload[key], dict)
-                       for key in ("account", "notifications", "capabilities"))
+                       for key in ("account", "notifications", "capabilities", "firmware"))
                 or not finite):
             raise ValueError("Invalid snapshot schema")
         return payload
@@ -393,6 +398,98 @@ class LocalPetSafeClient:
         if not isinstance(data, dict):
             raise ValueError("Unexpected local capabilities response")
         return data
+
+    @staticmethod
+    def _command(data: Any) -> dict:
+        required = {"id", "code", "state", "confirmed", "responseReceived",
+                    "submittedAt", "deadline"}
+        if (not isinstance(data, dict) or not required <= set(data)
+                or any(not isinstance(data[key], str) or not data[key]
+                       for key in ("id", "code", "submittedAt"))
+                or data["state"] not in COMMAND_STATES
+                or type(data["confirmed"]) is not bool
+                or type(data["responseReceived"]) is not bool
+                or type(data["deadline"]) not in (int, float)
+                or not math.isfinite(data["deadline"])):
+            raise ValueError("Unexpected local command response")
+        return data
+
+    async def get_last_command(self, thing_name: str) -> Optional[dict]:
+        """Return the latest native command submission record, if any."""
+        data = self._data(await self.api_get(
+            "smartdoor/product/product/{}/commands".format(
+                self._segment(thing_name, "thing_name"))))
+        return None if data is None else self._command(data)
+
+    async def submit_command(self, thing_name: str, code: str,
+                             data: Optional[dict] = None) -> dict:
+        """Submit an allowlisted native maintenance command."""
+        data = {} if data is None else data
+        if code in EMPTY_COMMANDS:
+            valid = data == {}
+        elif code == "MEMFAULT_CONFIG":
+            valid = (isinstance(data, dict) and set(data) == {"mask", "time"}
+                     and all(type(data[key]) is int and 0 <= data[key] <= 0xffffffff
+                             for key in data))
+        elif code == "CLI":
+            value = data.get("TESTCMD") if isinstance(data, dict) and set(data) == {"TESTCMD"} else None
+            valid = (isinstance(value, str) and 1 <= len(value) <= 64
+                     and all(32 <= ord(character) <= 126 for character in value))
+        else:
+            valid = False
+        if not valid:
+            raise ValueError("Invalid native maintenance command")
+        result = self._data(await self.api_post(
+            "smartdoor/product/product/{}/commands".format(
+                self._segment(thing_name, "thing_name")), {"code": code, "data": data}))
+        return self._command(result)
+
+    @staticmethod
+    def _sha256(value: str) -> str:
+        if type(value) is not str or not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            raise ValueError("sha256 must be 64 hexadecimal characters")
+        return value.lower()
+
+    async def get_firmware(self, thing_name: str) -> dict:
+        """Return public firmware artifacts and the current installation job."""
+        data = self._data(await self.api_get(
+            "smartdoor/product/product/{}/firmware".format(
+                self._segment(thing_name, "thing_name"))))
+        if (not isinstance(data, dict) or not {"artifacts", "job"} <= set(data)
+                or not isinstance(data["artifacts"], list)
+                or any(not isinstance(item, dict) for item in data["artifacts"])
+                or data["job"] is not None and not isinstance(data["job"], dict)):
+            raise ValueError("Unexpected local firmware response")
+        return data
+
+    async def stage_firmware(self, thing_name: str, artifact_id: str,
+                             version: str, sha256: str) -> dict:
+        """Stage one server-owned firmware inbox artifact after hash verification."""
+        if type(artifact_id) is not str or not artifact_id or type(version) is not str or not version:
+            raise ValueError("artifact_id and version must be provided")
+        data = self._data(await self.api_post(
+            "smartdoor/product/product/{}/firmware/artifacts".format(
+                self._segment(thing_name, "thing_name")),
+            {"artifactId": artifact_id, "version": version, "sha256": self._sha256(sha256)}))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local firmware artifact response")
+        return data
+
+    async def install_firmware(self, thing_name: str, sha256: str) -> dict:
+        """Queue installation of one previously staged firmware hash."""
+        data = self._data(await self.api_post(
+            "smartdoor/product/product/{}/firmware/jobs".format(
+                self._segment(thing_name, "thing_name")), {"sha256": self._sha256(sha256)}))
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected local firmware job response")
+        return data
+
+    async def cancel_firmware_job(self, thing_name: str, job_id: str) -> Any:
+        """Cancel one firmware installation job."""
+        path = "smartdoor/product/product/{}/firmware/jobs/{}".format(
+            self._segment(thing_name, "thing_name"), self._segment(job_id, "job_id"))
+        response = await self.api_delete(path)
+        return self._data(response) if response.content else None
 
     @staticmethod
     def _scan_path(thing_name: str, scan_id: Optional[str] = None) -> str:

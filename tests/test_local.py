@@ -173,6 +173,8 @@ def test_iter_events_parses_snapshots_and_closes_stream():
                 "door": {"thingName": "door-test"}, "pets": [], "links": {},
                 "activity": [], "override": None, "rfidScan": None,
                 "setupSession": {"state": "expired"},
+                "command": None, "firmware": {"state": "idle"},
+                "futureField": {"addedWithoutClientRelease": True},
                 "account": {"firstName": "Local"}, "notifications": {"enabled": False},
                 "capabilities": {"rfidScan": True}}
 
@@ -248,7 +250,7 @@ def test_iter_events_sanitizes_deep_schema_recursion():
 
 @pytest.mark.parametrize("field,value", [
     ("rfidScan", []), ("setupSession", []), ("account", None),
-    ("notifications", []), ("capabilities", []),
+    ("command", []), ("notifications", []), ("capabilities", []), ("firmware", None),
 ])
 def test_snapshot_optional_management_fields_are_typed(field, value):
     snapshot = {"version": 1, "revision": 0, "brokerConnected": False,
@@ -304,6 +306,24 @@ def test_local_management_helpers_cover_model_routes():
                 "thingName": door_id, "preferences": {"sendPetActivityNotifications": False}}}})
         if route == "directory/product-preferences" and request.method == "PUT":
             return httpx.Response(200, json={"data": request_data})
+        command_route = "smartdoor/product/product/{}/commands".format(door_id)
+        command = {"id": "command-id", "code": "REPORT_STATUS", "state": "submitted",
+                   "confirmed": False, "responseReceived": False,
+                   "submittedAt": "2026-10-24T12:00:00+00:00", "deadline": 123.0}
+        if route == command_route and request.method == "GET":
+            return httpx.Response(200, json={"data": command})
+        if route == command_route and request.method == "POST":
+            return httpx.Response(202, json={"data": dict(command, code=request_data["code"])})
+        firmware_route = "smartdoor/product/product/{}/firmware".format(door_id)
+        if route == firmware_route and request.method == "GET":
+            return httpx.Response(200, json={"data": {"artifacts": [{"artifactId": "fw-id"}],
+                                                        "job": None}})
+        if route == firmware_route + "/artifacts" and request.method == "POST":
+            return httpx.Response(201, json={"data": request_data})
+        if route == firmware_route + "/jobs" and request.method == "POST":
+            return httpx.Response(202, json={"data": {"id": "job-id", **request_data}})
+        if route == firmware_route + "/jobs/job-id" and request.method == "DELETE":
+            return httpx.Response(200, json={"data": {"id": "job-id", "state": "cancelled"}})
         scan_base = "smartdoor/product/product/{}/rfid-scans".format(door_id)
         if route == scan_base and request.method == "POST":
             return httpx.Response(202, json={"data": {"id": scan_id, "state": "scanning"}})
@@ -338,6 +358,18 @@ def test_local_management_helpers_cover_model_routes():
             flags = await client.get_notifications(door_id)
             assert flags["sendPetActivityNotifications"] is False
             assert (await client.update_notifications(door_id, flags)) == flags
+            assert (await client.get_last_command(door_id))["state"] == "submitted"
+            assert (await client.submit_command(door_id, "REPORT_STATUS"))["confirmed"] is False
+            assert (await client.submit_command(
+                door_id, "MEMFAULT_CONFIG", {"mask": 0xffffffff, "time": 0}))["code"] == "MEMFAULT_CONFIG"
+            assert (await client.submit_command(
+                door_id, "CLI", {"TESTCMD": "status"}))["code"] == "CLI"
+            digest = "aB" * 32
+            assert (await client.get_firmware(door_id))["artifacts"][0]["artifactId"] == "fw-id"
+            staged = await client.stage_firmware(door_id, "fw-id", "1.2.3", digest)
+            assert staged["sha256"] == digest.lower()
+            assert (await client.install_firmware(door_id, digest))["id"] == "job-id"
+            assert (await client.cancel_firmware_job(door_id, "job-id"))["state"] == "cancelled"
             assert (await client.start_rfid_scan(door_id, "MICROCHIP"))["id"] == scan_id
             assert (await client.get_rfid_scan(door_id))["state"] == "captured"
             assert (await client.get_rfid_scan(door_id, scan_id))["state"] == "captured"
@@ -407,3 +439,51 @@ def test_management_route_segments_fail_closed(value):
     with pytest.raises(ValueError):
         client._scan_path(value)
     run(client.aclose())
+
+
+@pytest.mark.parametrize("code,data", [
+    ("UNKNOWN", {}), ("REBOOT", {"unexpected": True}),
+    ("MEMFAULT_CONFIG", {"mask": -1, "time": 0}),
+    ("MEMFAULT_CONFIG", {"mask": True, "time": 0}),
+    ("CLI", {"TESTCMD": ""}), ("CLI", {"TESTCMD": "line\nfeed"}),
+    ("CLI", {"TESTCMD": "x" * 65}),
+])
+def test_native_command_payloads_fail_before_network(code, data):
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(202)
+
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            with pytest.raises(ValueError, match="maintenance command"):
+                await petsafe.LocalPetSafeClient(BASE, TOKEN, client=http).submit_command(
+                    "door-id", code, data)
+
+    run(check())
+    assert calls == 0
+
+
+@pytest.mark.parametrize("action", [
+    lambda client: client.stage_firmware("door-id", "fw-id", "1.0", "not-a-hash"),
+    lambda client: client.stage_firmware("door-id", "", "1.0", "a" * 64),
+    lambda client: client.install_firmware("door-id", "a" * 63),
+    lambda client: client.cancel_firmware_job("door-id", "../job"),
+])
+def test_firmware_inputs_fail_before_network(action):
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200)
+
+    async def check():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            with pytest.raises(ValueError):
+                await action(petsafe.LocalPetSafeClient(BASE, TOKEN, client=http))
+
+    run(check())
+    assert calls == 0

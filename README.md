@@ -84,6 +84,10 @@ also requires supported BLE hardware or a nearby proxy and an HTTPS hostname and
 certificate trusted by the SmartDoor; hardware testing used an Amazon-trusted
 certificate. A raw IP address is not a supported or promised substitute.
 
+Local maintenance helpers include allowlisted native command submission and firmware
+inspection, staging, installation, and cancellation. `install_firmware()` is an explicit
+physical-device mutation; returned job state is not a promise of firmware outcome.
+
 ## Cloud login tokens
 You **must** use tokens to interact with the PetSafe Smart-Feed API.  
 There are two methods to retrieve tokens:
